@@ -7,7 +7,7 @@
 #define CGS_LOG g_log
 
 #include <iostream>
-
+#include <string.h>
 #ifdef _WIN32
 
 #include <winsock2.h>
@@ -15,6 +15,7 @@
 #endif
 
 #include <glib.h>
+#include <glib/gi18n.h>
 #include <jansson.h>
 
 #include "Websockets.h"
