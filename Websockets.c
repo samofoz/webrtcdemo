@@ -65,9 +65,11 @@ int cgs_websockets_init(struct cgs_websockets** pcgs_websockets, cgs_websockets_
 
 	/* Init an lws context */
 	memset(&info, 0, sizeof info); /* otherwise uninitialized garbage */
-	info.port = 80;
+	info.port = 7681;
 	info.mounts = &mount;
 	info.protocols = protocols;
+	//info.iface = "localhost";
+	info.options = LWS_SERVER_OPTION_DISABLE_IPV6;
 
 	(*pcgs_websockets)->plws_context = lws_create_context(&info);
 	if (!(*pcgs_websockets)->plws_context) {
