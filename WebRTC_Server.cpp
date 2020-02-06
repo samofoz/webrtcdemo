@@ -372,10 +372,30 @@ int cgs_system_initialise(void) {
 	return 0;
 }
 
+char* cgs_get_next_crn()
+{
+	static int crn;
+	size_t count = 0;
+	int n = INT_MAX;
+
+	/* Count the number of digits in the max integer */
+	while (n != 0) {
+		n = n / 10;
+		++count;
+	}
+
+	char* str_crn = (char *)calloc(count + 1, sizeof(char));
+	if(str_crn) {
+		sprintf(str_crn, "%d", ++crn);
+	}
+	return str_crn;
+}
+
 int cgs_websockets_callback(cgs_websockets* pcgs_websockets, cgs_websockets_instance* pcgs_websockets_instance, cgs_websocket_event* pevent, void* user_context) {
 	cgs_queue_item* event = new cgs_queue_item;
 	if (!event)
 		return 1;
+	event->context = NULL;
 
 	switch (pevent->code) {
 	case CGS_WEBSOCKET_EVENT_CONNECTED: {
@@ -385,13 +405,20 @@ int cgs_websockets_callback(cgs_websockets* pcgs_websockets, cgs_websockets_inst
 			delete event;
 			return 1;
 		}
-		event->context = g_uuid_string_random();
-		if (!event->context) {
-			delete pcgs_tasklet_info;
-			delete event;
-			return 1;
-		}
+		
+		do {
+			if (event->context) free(event->context);
+
+			event->context = cgs_get_next_crn();
+			if (!event->context) {
+				delete pcgs_tasklet_info;
+				delete event;
+				return 1;
+			}
+		} while (g_hash_table_contains(g_task_info.main_context_hash_table, event->context));
+
 		if (!g_hash_table_insert(g_task_info.main_context_hash_table, event->context, pcgs_tasklet_info)) {
+			free(event->context);
 			delete pcgs_tasklet_info;
 			delete event;
 			return 1;

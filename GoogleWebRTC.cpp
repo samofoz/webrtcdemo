@@ -1,4 +1,10 @@
+
+#ifdef _WIN32
+#define WEBRTC_WIN
+#else
 #define WEBRTC_POSIX
+#endif
+
 #define NOMINMAX
 #define WEBRTC_INCLUDE_INTERNAL_AUDIO_DEVICE
 
