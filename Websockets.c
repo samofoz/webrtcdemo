@@ -58,18 +58,21 @@ int cgs_websockets_init(struct cgs_websockets** pcgs_websockets, cgs_websockets_
 	};
 	static struct lws_protocols protocols[] = {
 		{ "http", lws_callback_http_dummy, 0, 0 },
+		{ "https", lws_callback_http_dummy, 0, 0 },
 		{"lws-minimal", cgs_websockets_lws_callback, sizeof(struct cgs_websockets_instance *)},
 		{ NULL, NULL, 0, 0 } /* terminator */
 	};
-	protocols[1].user = *pcgs_websockets;
+	protocols[2].user = *pcgs_websockets;
 
 	/* Init an lws context */
 	memset(&info, 0, sizeof info); /* otherwise uninitialized garbage */
-	info.port = 7681;
+	info.port = 80;
 	info.mounts = &mount;
 	info.protocols = protocols;
 	//info.iface = "localhost";
-	info.options = LWS_SERVER_OPTION_DISABLE_IPV6;
+	info.options = LWS_SERVER_OPTION_DISABLE_IPV6 | LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT | LWS_SERVER_OPTION_HTTP_HEADERS_SECURITY_BEST_PRACTICES_ENFORCE;
+	info.ssl_cert_filepath = "demo.cert";
+	info.ssl_private_key_filepath = "demo.key";
 
 	(*pcgs_websockets)->plws_context = lws_create_context(&info);
 	if (!(*pcgs_websockets)->plws_context) {

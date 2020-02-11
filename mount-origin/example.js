@@ -13,45 +13,43 @@ const offerOptions = {
 
 
 
-function get_appropriate_ws_url(extra_url)
-{
-	var pcol;
-	var u = document.URL;
+function get_appropriate_ws_url(extra_url) {
+    var pcol;
+    var u = document.URL;
 
 	/*
 	 * We open the websocket encrypted if this page came on an
 	 * https:// url itself, otherwise unencrypted
 	 */
 
-	if (u.substring(0, 5) === "https") {
-		pcol = "wss://";
-		u = u.substr(8);
-	} else {
-		pcol = "ws://";
-		if (u.substring(0, 4) === "http")
-			u = u.substr(7);
-	}
+    if (u.substring(0, 5) === "https") {
+        pcol = "wss://";
+        u = u.substr(8);
+    } else {
+        pcol = "ws://";
+        if (u.substring(0, 4) === "http")
+            u = u.substr(7);
+    }
 
-	u = u.split("/");
+    u = u.split("/");
 
-	/* + "/xxx" bit is for IE10 workaround */
+    /* + "/xxx" bit is for IE10 workaround */
 
-	return pcol + u[0] + "/" + extra_url;
+    return pcol + u[0] + "/" + extra_url;
 }
 
-function new_ws(urlpath, protocol)
-{
-	if (typeof MozWebSocket != "undefined")
-		return new MozWebSocket(urlpath, protocol);
+function new_ws(urlpath, protocol) {
+    if (typeof MozWebSocket != "undefined")
+        return new MozWebSocket(urlpath, protocol);
 
-	return new WebSocket(urlpath, protocol);
+    return new WebSocket(urlpath, protocol);
 }
 
-document.addEventListener("DOMContentLoaded", async function() {
+document.addEventListener("DOMContentLoaded", async function () {
 
-	ws = new_ws(get_appropriate_ws_url(""), "lws-minimal");
-	try {
-		ws.onopen = function() {
+    ws = new_ws(get_appropriate_ws_url(""), "lws-minimal");
+    try {
+        ws.onopen = function () {
             localVideo = document.getElementById('localVideo');
             remoteVideo1 = document.getElementById('remoteVideo1');
             remoteVideo2 = document.getElementById('remoteVideo2');
@@ -75,80 +73,91 @@ document.addEventListener("DOMContentLoaded", async function() {
 
             try {
                 const stream = navigator.mediaDevices.getUserMedia({ audio: true, video: true, echoCancellation: false })
-                        .then(function (stream) {
-                            console.log('Received local stream');
-                            localVideo.srcObject = stream;
-                            localStream = stream;
+                    .then(function (stream) {
+                        console.log('Received local stream');
+                        localVideo.srcObject = stream;
+                        localStream = stream;
 
-                            const videoTracks = localStream.getVideoTracks();
-                            const audioTracks = localStream.getAudioTracks();
-                            if (videoTracks.length > 0) {
-                                console.log(`Using video device: ${videoTracks[0].label}`);
-                            }
-                            if (audioTracks.length > 0) {
-                                console.log(`Using audio device: ${audioTracks[0].label}`);
-                            }
-                            const configuration = { sdpSemantics: "unified-plan" };
-                            console.log('RTCPeerConnection configuration:', configuration);
-                            pc1 = new RTCPeerConnection(configuration);
-                            console.log('Created local peer connection object pc1');
-                            pc1.addEventListener('icecandidate', e => onIceCandidate(pc1, e));
-                            pc1.addEventListener('iceconnectionstatechange', e => onIceStateChange(pc1, e));
-                            pc1.addEventListener('track', gotRemoteStream);
-                            pc1.addEventListener('addstream', onAddStream);
-                            localStream.getTracks().forEach(track => pc1.addTrack(track, localStream));
-                            console.log('Added local stream to pc1');
+                        const videoTracks = localStream.getVideoTracks();
+                        const audioTracks = localStream.getAudioTracks();
+                        if (videoTracks.length > 0) {
+                            console.log(`Using video device: ${videoTracks[0].label}`);
+                        }
+                        if (audioTracks.length > 0) {
+                            console.log(`Using audio device: ${audioTracks[0].label}`);
+                        }
+                        const configuration = {
+                            sdpSemantics: "unified-plan", iceServers: [
+                                {
+                                    urls: "stun:stun.l.google.com:19302"
+                                },
+                                {
+                                    url: 'turn:numb.viagenie.ca',
+                                    credential: 'muazkh',
+                                    username: 'webrtc@live.com'
+                                }
+                            ]
+                        };
+                        console.log('RTCPeerConnection configuration:', configuration);
+                        pc1 = new RTCPeerConnection(configuration);
+                        console.log('Created local peer connection object pc1');
+                        pc1.addEventListener('icecandidate', e => onIceCandidate(pc1, e));
+                        pc1.addEventListener('iceconnectionstatechange', e => onIceStateChange(pc1, e));
+                        pc1.addEventListener('track', gotRemoteStream);
+                        pc1.addEventListener('addstream', onAddStream);
+                        localStream.getTracks().forEach(track => pc1.addTrack(track, localStream));
+                        console.log('Added local stream to pc1');
 
-                            
-                            console.log('pc1 createOffer start');
-                            const offer = pc1.createOffer(offerOptions)
-                                .then(function (offer) {
-                                    pc1.setLocalDescription(offer)
-                                        .then(function () {
-                                            console.log(`setLocalDescription complete ${sdpOffer.toString()}`);
-                                        })
-                                    console.log(`createOffer complete ${offer.toString()}`);
-                                    sdpOffer = offer;
 
-                                    var n, s = "";
-                                    ring[head] = "Sent: [" + JSON.stringify(offer) + "]\n";
-                                    head = (head + 1) % 50;
-                                    if (tail === head)
-                                        tail = (tail + 1) % 50;
+                        console.log('pc1 createOffer start');
+                        const offer = pc1.createOffer(offerOptions)
+                            .then(function (offer) {
+                                pc1.setLocalDescription(offer)
+                                    .then(function () {
+                                        console.log(`setLocalDescription complete ${sdpOffer.toString()}`);
+                                    })
+                                console.log(`createOffer complete ${offer.toString()}`);
+                                sdpOffer = offer;
 
-                                    n = tail;
-                                    do {
-                                        s = s + ring[n];
-                                        n = (n + 1) % 50;
-                                    } while (n !== head);
+                                var n, s = "";
+                                ring[head] = "Sent: [" + JSON.stringify(offer) + "]\n";
+                                head = (head + 1) % 50;
+                                if (tail === head)
+                                    tail = (tail + 1) % 50;
 
-                                    document.getElementById("r").value = s;
-                                    document.getElementById("r").scrollTop = document.getElementById("r").scrollHeight;
-                                    ws.send(JSON.stringify(offer));
-                                })
-                        })
+                                n = tail;
+                                do {
+                                    s = s + ring[n];
+                                    n = (n + 1) % 50;
+                                } while (n !== head);
+
+                                document.getElementById("r").value = s;
+                                document.getElementById("r").scrollTop = document.getElementById("r").scrollHeight;
+                                ws.send(JSON.stringify(offer));
+                            })
+                    })
 
             } catch (e) {
                 alert(`getUserMedia() error: ${e.name} ${e.message}`);
             }
-		};
-	
-		ws.onmessage =function got_packet(msg) {
-			var n, s = "";
-	
-			ring[head] = "Recd: [" + msg.data + "]\n";
-			head = (head + 1) % 50;
-			if (tail === head)
-				tail = (tail + 1) % 50;
-	
-			n = tail;
-			do {
-				s = s + ring[n];
-				n = (n + 1) % 50;
-			} while (n !== head);
-	
-			document.getElementById("r").value = s; 
-			document.getElementById("r").scrollTop = document.getElementById("r").scrollHeight;
+        };
+
+        ws.onmessage = function got_packet(msg) {
+            var n, s = "";
+
+            ring[head] = "Recd: [" + msg.data + "]\n";
+            head = (head + 1) % 50;
+            if (tail === head)
+                tail = (tail + 1) % 50;
+
+            n = tail;
+            do {
+                s = s + ring[n];
+                n = (n + 1) % 50;
+            } while (n !== head);
+
+            document.getElementById("r").value = s;
+            document.getElementById("r").scrollTop = document.getElementById("r").scrollHeight;
 
             try {
                 var message = JSON.parse(msg.data);
@@ -174,9 +183,9 @@ document.addEventListener("DOMContentLoaded", async function() {
                                 ws.send(JSON.stringify(answer));
                                 console.log('Answer sent');
                                 pc1.setLocalDescription(answer, function () { console.log('setLocalDescription() done'); });
-                                
+
                             })
-                                .catch(function(error) { console.log('createAnswer error'); });
+                                .catch(function (error) { console.log('createAnswer error'); });
                         }
                     });
 
@@ -192,14 +201,14 @@ document.addEventListener("DOMContentLoaded", async function() {
             } catch (e) {
                 console.log(`JSON.parse() error: ${e.name} ${e.message}`);
             }
-            };
-	
-		ws.onclose = function(){
-			document.getElementById("r").disabled = 1;
-		};
-	} catch(exception) {
-		alert("<p>Error " + exception);  
-	}
+        };
+
+        ws.onclose = function () {
+            document.getElementById("r").disabled = 1;
+        };
+    } catch (exception) {
+        alert("<p>Error " + exception);
+    }
 
 }, false);
 

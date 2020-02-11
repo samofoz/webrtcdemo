@@ -320,7 +320,7 @@ int main()
 				case CGS_EVENT_WEBRTC_CREATE_SESSION_DESCRIPTION_ANSWER_FAILED:
 					break;
 				case CGS_EVENT_WEBRTC_ICE_CANDIDATE:
-					//cgs_websockets_send(pcgs_tasklet_info->websocket_instance, (char*)event->in, strlen((char*)event->in));
+					cgs_websockets_send(pcgs_tasklet_info->websocket_instance, (char*)event->in, strlen((char*)event->in));
 					break;
 				case CGS_EVENT_WEBRTC_ICE_GATHERING_CHANGE:
 					if (event->in) {

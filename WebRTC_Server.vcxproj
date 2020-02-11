@@ -155,11 +155,13 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="fake_audio_capture_module.cc" />
     <ClCompile Include="GoogleWebRTC.cpp" />
     <ClCompile Include="WebRTC_Server.cpp" />
     <ClCompile Include="Websockets.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="fake_audio_capture_module.h" />
     <ClInclude Include="GoogleWebRTC.h" />
     <ClInclude Include="Websockets.h" />
   </ItemGroup>
