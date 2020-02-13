@@ -113,28 +113,27 @@ int cgs_webrtc_init(struct cgs_webrtc** pcgs_webrtc, cgs_webrtc_event_callback c
 		goto GET_OUT;
 	}
 
-#if 0
-	(*pcgs_webrtc)->audio_device = FakeAudioCaptureModule::Create();
-#else
 	/* Create dummy audio device so incoming audio tracks are sent to it */
 	(*pcgs_webrtc)->audio_device = (*pcgs_webrtc)->worker_thread->Invoke<rtc::scoped_refptr<webrtc::AudioDeviceModule>>(RTC_FROM_HERE,
 		[]()
 		{
+#if 0
 			return FakeAudioCaptureModule::Create();
-			//return webrtc::CreateAudioDeviceWithDataObserver(webrtc::AudioDeviceModule::kPlatformDefaultAudio, webrtc::CreateDefaultTaskQueueFactory().get(), new cgs_AudioDeviceDataObserver);
+#else
+			return webrtc::AudioDeviceModule::Create(webrtc::AudioDeviceModule::kPlatformDefaultAudio, webrtc::CreateDefaultTaskQueueFactory().get());
+#endif
 		});
 	if (!(*pcgs_webrtc)->audio_device) {
 		ret = CGS_WEBRTC_ERROR_WEBRTC;
 		goto GET_OUT;
 	}
 	(*pcgs_webrtc)->audio_device->Init();
-#endif
 
 	(*pcgs_webrtc)->peer_connection_factory = webrtc::CreatePeerConnectionFactory(
 											(*pcgs_webrtc)->network_thread.get() /* network_thread */, 
 											(*pcgs_webrtc)->worker_thread.get() /* worker_thread */,
 											(*pcgs_webrtc)->signaling_thread.get() /* signaling_thread */, 
-		(*pcgs_webrtc)->audio_device /* default_adm */,//nullptr,//
+											(*pcgs_webrtc)->audio_device /* default_adm */,//nullptr,//
 											webrtc::CreateBuiltinAudioEncoderFactory(),
 											webrtc::CreateBuiltinAudioDecoderFactory(),
 											webrtc::CreateBuiltinVideoEncoderFactory(),
@@ -326,6 +325,7 @@ public:
 			class cgs_webrtc_audio_track_sink* psink = new cgs_webrtc_audio_track_sink(pcgs_webrtc_, pcgs_webrtc_instance_);
 			pcgs_webrtc_instance_->tracks.push_back(std::make_pair(transceiver->receiver()->track(), psink));
 			((webrtc::AudioTrackInterface*)transceiver->receiver()->track().get())->AddSink(psink);
+			//transceiver->receiver()->track()->set_enabled(false);
 		}
 		else {
 			class cgs_webrtc_video_track_sink* psink = new cgs_webrtc_video_track_sink(pcgs_webrtc_, pcgs_webrtc_instance_);
