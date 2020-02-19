@@ -184,7 +184,7 @@ public:
 		int sample_rate,
 		size_t number_of_channels,
 		size_t number_of_frames) {
-		printf("\n\ncgs_webrtc_audio_track_sink::OnData()\n\n");
+		//printf("\n\ncgs_webrtc_audio_track_sink::OnData()\n\n");
 	}
 };
 
@@ -202,7 +202,7 @@ public:
 
 	// VideoSinkInterface implementation
 	void OnFrame(const webrtc::VideoFrame& frame) override {
-		printf("\n\ncgs_webrtc_video_track_sink::OnFrame()\n\n");
+		//printf("\n\ncgs_webrtc_video_track_sink::OnFrame()\n\n");
 	}
 };
 
@@ -266,6 +266,9 @@ public:
 	void OnIceGatheringChange(webrtc::PeerConnectionInterface::IceGatheringState new_state) override {
 		cgs_webrtc_event event;
 		event.code = CGS_WEBRTC_EVENT_ICE_GATHERING_CHANGE;
+#if 1
+		event.in = NULL;
+#else
 		if (new_state == webrtc::PeerConnectionInterface::kIceGatheringComplete) {
 			json_t* json_candidate = json_pack("{sssiss}", "sdpMid", "", "sdpMLineIndex", 0, "candidate", "");
 			event.in = json_dumps(json_candidate, JSON_COMPACT);
@@ -274,6 +277,7 @@ public:
 		else {
 			event.in = NULL;
 		}
+#endif
 		pcgs_webrtc_->callback(pcgs_webrtc_, pcgs_webrtc_instance_, &event, pcgs_webrtc_instance_->user_context);
 	}
 	void OnIceCandidate(const webrtc::IceCandidateInterface* candidate) override {
@@ -283,7 +287,7 @@ public:
 		std::string sdp;
 		candidate->ToString(&sdp);
 
-		json_t* json_candidate = json_pack("{sssiss}", "sdpMid", candidate->sdp_mid().c_str(), "sdpMLineIndex", candidate->sdp_mline_index(), "candidate", sdp.c_str());
+		json_t* json_candidate = json_pack("{sssssiss}", "type", "candidate", "sdpMid", candidate->sdp_mid().c_str(), "sdpMLineIndex", candidate->sdp_mline_index(), "candidate", sdp.c_str());
 		event.in = json_dumps(json_candidate, JSON_COMPACT);
 		json_decref(json_candidate);
 
@@ -314,13 +318,6 @@ public:
 		pcgs_webrtc_->callback(pcgs_webrtc_, pcgs_webrtc_instance_, &event, pcgs_webrtc_instance_->user_context);
 	}
 	virtual void OnTrack(rtc::scoped_refptr<webrtc::RtpTransceiverInterface> transceiver) {
-
-		auto result_or_error = pcgs_webrtc_instance_->peer_connection->AddTrack(transceiver->receiver()->track().get(), { "stream_id" });
-		if (!result_or_error.ok()) {
-			printf("Failed to add audio track to PeerConnection: %s", result_or_error.error().message());
-		}
-
-#if 1
 		if (transceiver->receiver()->track()->kind() == webrtc::MediaStreamTrackInterface::kAudioKind) {
 			class cgs_webrtc_audio_track_sink* psink = new cgs_webrtc_audio_track_sink(pcgs_webrtc_, pcgs_webrtc_instance_);
 			pcgs_webrtc_instance_->tracks.push_back(std::make_pair(transceiver->receiver()->track(), psink));
@@ -332,7 +329,6 @@ public:
 			pcgs_webrtc_instance_->tracks.push_back(std::make_pair(transceiver->receiver()->track(), psink));
 			((webrtc::VideoTrackInterface*)transceiver->receiver()->track().get())->AddOrUpdateSink(psink, rtc::VideoSinkWants());
 		}
-#endif
 		cgs_webrtc_event event;
 		event.code = CGS_WEBRTC_EVENT_TRACK;
 		event.in = NULL;
@@ -580,11 +576,21 @@ int cgs_webrtc_add_to_conference(struct cgs_webrtc_instance* pcgs_webrtc_instanc
 int cgs_webrtc_remove_from_conference(struct cgs_webrtc_instance* pcgs_webrtc_instance, struct cgs_webrtc_conference* pcgs_webrtc_conference) {
 	for (auto const& pwi : pcgs_webrtc_conference->pwebrtc_instance_list) {
 		if (pwi && pwi != pcgs_webrtc_instance) {
-			for (int i = 0; i < pcgs_webrtc_instance->peer_connection->GetSenders().size(); ++i) {
-				pwi->peer_connection->RemoveTrack(pcgs_webrtc_instance->peer_connection->GetSenders()[i]);
+			for (auto const& track : pcgs_webrtc_instance->tracks) {
+				for (auto const& pwi_sender : pwi->peer_connection->GetSenders()) {
+					if(pwi_sender->track() && track.first->id() == pwi_sender->track()->id()){
+						pwi->peer_connection->RemoveTrack(pwi_sender);
+						break;
+					}
+				}
 			}
-			for (int i = 0; i < pwi->peer_connection->GetSenders().size(); ++i) {
-				pcgs_webrtc_instance->peer_connection->RemoveTrack(pwi->peer_connection->GetSenders()[i]);
+			for (auto const& track : pwi->tracks) {
+				for (auto const& this_sender : pcgs_webrtc_instance->peer_connection->GetSenders()) {
+					if (this_sender->track() && track.first->id() == this_sender->track()->id()) {
+						pcgs_webrtc_instance->peer_connection->RemoveTrack(this_sender);
+						break;
+					}
+				}
 			}
 		}
 	}

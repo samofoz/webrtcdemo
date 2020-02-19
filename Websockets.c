@@ -40,7 +40,7 @@ int cgs_websockets_init(struct cgs_websockets** pcgs_websockets, cgs_websockets_
 	static const struct lws_http_mount mount = {
 		/* .mount_next */		NULL,		/* linked-list "next" */
 		/* .mountpoint */		"/",		/* mountpoint URL */
-		/* .origin */			"./mount-origin", /* serve from dir */
+		/* .origin */			"./mount-origin/apprtc", /* serve from dir */
 		/* .def */			"index.html",	/* default filename */
 		/* .protocol */			NULL,
 		/* .cgienv */			NULL,
@@ -70,7 +70,7 @@ int cgs_websockets_init(struct cgs_websockets** pcgs_websockets, cgs_websockets_
 	info.mounts = &mount;
 	info.protocols = protocols;
 	//info.iface = "localhost";
-	info.options = LWS_SERVER_OPTION_DISABLE_IPV6 | LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT | LWS_SERVER_OPTION_HTTP_HEADERS_SECURITY_BEST_PRACTICES_ENFORCE;
+	info.options = LWS_SERVER_OPTION_DISABLE_IPV6 | LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
 	info.ssl_cert_filepath = "demo.cert";
 	info.ssl_private_key_filepath = "demo.key";
 
