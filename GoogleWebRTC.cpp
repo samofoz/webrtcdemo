@@ -318,6 +318,9 @@ public:
 		pcgs_webrtc_->callback(pcgs_webrtc_, pcgs_webrtc_instance_, &event, pcgs_webrtc_instance_->user_context);
 	}
 	virtual void OnTrack(rtc::scoped_refptr<webrtc::RtpTransceiverInterface> transceiver) {
+		std::ostringstream stream_id;
+		stream_id << pcgs_webrtc_instance_ << "-" << "loopback";
+		pcgs_webrtc_instance_->peer_connection->AddTrack(transceiver->receiver()->track(), { stream_id.str() });
 		if (transceiver->receiver()->track()->kind() == webrtc::MediaStreamTrackInterface::kAudioKind) {
 			class cgs_webrtc_audio_track_sink* psink = new cgs_webrtc_audio_track_sink(pcgs_webrtc_, pcgs_webrtc_instance_);
 			pcgs_webrtc_instance_->tracks.push_back(std::make_pair(transceiver->receiver()->track(), psink));
