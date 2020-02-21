@@ -6,7 +6,7 @@ var PeerConnectionClient = function (params, startTime) {
     this.pc_ = new RTCPeerConnection(params.peerConnectionConfig, params.peerConnectionConstraints);
     this.pc_.onicecandidate = this.onIceCandidate_.bind(this);
     this.pc_.ontrack = this.onRemoteStreamAdded_.bind(this);
-    this.pc_.onremovestream = trace.bind(null, "Remote stream removed.");
+    this.pc_.onremovestream = this.onRemoteStreamRemoved_.bind(this);;
     this.pc_.onsignalingstatechange = this.onSignalingStateChanged_.bind(this);
     this.pc_.oniceconnectionstatechange = this.onIceConnectionStateChanged_.bind(this);
     window.dispatchEvent(new CustomEvent("pccreated", { detail: { pc: this, time: new Date, userId: this.params_.roomId + (this.isInitiator_ ? "-0" : "-1"), sessionId: this.params_.roomId } }));
@@ -20,6 +20,7 @@ var PeerConnectionClient = function (params, startTime) {
     this.onremotehangup = null;
     this.onremotesdpset = null;
     this.onremotestreamadded = null;
+    this.onremotestreamremoved = null;
     this.onsignalingmessage = null;
     this.onsignalingstatechange = null;
 };
@@ -244,6 +245,12 @@ PeerConnectionClient.prototype.onRemoteStreamAdded_ = function (event) {
     trace("PeerConnectionClient.prototype.onRemoteStreamAdded_()");
     if (this.onremotestreamadded) {
         this.onremotestreamadded(event.streams[0]);
+    }
+};
+PeerConnectionClient.prototype.onRemoteStreamRemoved_ = function (event) {
+    trace("PeerConnectionClient.prototype.onRemoteStreamRemoved()");
+    if (this.onremotestreamremoved) {
+        this.onremotestreamremoved(event.streams[0]);
     }
 };
 PeerConnectionClient.prototype.onError_ = function (tag, error) {

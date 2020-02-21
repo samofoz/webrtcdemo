@@ -1,19 +1,18 @@
-var remoteVideo = $("#remote-video");
 var UI_CONSTANTS = {
-    confirmJoinButton: "#confirm-join-button", confirmJoinDiv: "#confirm-join-div", confirmJoinRoomSpan: "#confirm-join-room-span", fullscreenSvg: "#fullscreen", hangupSvg: "#hangup", icons: "#icons", infoDiv: "#info-div", localVideo: "#local-video", miniVideo: "#mini-video", muteAudioSvg: "#mute-audio", muteVideoSvg: "#mute-video", newRoomButton: "#new-room-button", newRoomLink: "#new-room-link", privacyLinks: "#privacy", remoteVideo: "#remote-video", rejoinButton: "#rejoin-button", rejoinDiv: "#rejoin-div",
+    confirmJoinButton: "#confirm-join-button", confirmJoinDiv: "#confirm-join-div", confirmJoinRoomSpan: "#confirm-join-room-span", fullscreenSvg: "#fullscreen", hangupSvg: "#hangup", icons: "#icons", infoDiv: "#info-div", videosDiv: "#videos", muteAudioSvg: "#mute-audio", muteVideoSvg: "#mute-video", newRoomButton: "#new-room-button", newRoomLink: "#new-room-link", privacyLinks: "#privacy", rejoinButton: "#rejoin-button", rejoinDiv: "#rejoin-div",
     rejoinLink: "#rejoin-link", roomLinkHref: "#room-link-href", roomSelectionDiv: "#room-selection", roomSelectionInput: "#room-id-input", roomSelectionInputLabel: "#room-id-input-label", roomSelectionJoinButton: "#join-button", roomSelectionRandomButton: "#random-button", roomSelectionRecentList: "#recent-rooms-list", sharingDiv: "#sharing-div", statusDiv: "#status-div", videosDiv: "#videos"
 };
+var remoteVideos = new Map();
+var remoteVideosDiv = $(UI_CONSTANTS.videosDiv);
+
 var AppController = function (loadingParams) {
     trace("AppController()");
     trace("Initializing; server= " + loadingParams.roomServer + ".");
     trace("Initializing; room=" + loadingParams.roomId + ".");
     this.hangupSvg_ = $(UI_CONSTANTS.hangupSvg);
     this.icons_ = $(UI_CONSTANTS.icons);
-    this.localVideo_ = $(UI_CONSTANTS.localVideo);
-    this.miniVideo_ = $(UI_CONSTANTS.miniVideo);
     this.sharingDiv_ = $(UI_CONSTANTS.sharingDiv);
     this.statusDiv_ = $(UI_CONSTANTS.statusDiv);
-    this.remoteVideo_ = $(UI_CONSTANTS.remoteVideo);
     this.videosDiv_ = $(UI_CONSTANTS.videosDiv);
     this.roomLinkHref_ = $(UI_CONSTANTS.roomLinkHref);
     this.rejoinDiv_ = $(UI_CONSTANTS.rejoinDiv);
@@ -70,28 +69,10 @@ AppController.prototype.createCall_ = function () {
     var privacyLinks = $(UI_CONSTANTS.privacyLinks);
     this.hide_(privacyLinks);
     this.call_ = new Call(this.loadingParams_);
-    this.infoBox_ = new InfoBox($(UI_CONSTANTS.infoDiv), this.call_, this.loadingParams_.versionInfo);
-    var roomErrors = this.loadingParams_.errorMessages;
-    var roomWarnings = this.loadingParams_.warningMessages;
-    if (roomErrors && roomErrors.length > 0) {
-        for (var i = 0; i < roomErrors.length; ++i) {
-            this.infoBox_.pushErrorMessage(roomErrors[i]);
-        }
-        return;
-    } else {
-        if (roomWarnings && roomWarnings.length > 0) {
-            for (var j = 0; j < roomWarnings.length; ++j) {
-                this.infoBox_.pushWarningMessage(roomWarnings[j]);
-            }
-        }
-    }
     this.call_.onremotehangup = this.onRemoteHangup_.bind(this);
     this.call_.onremotesdpset = this.onRemoteSdpSet_.bind(this);
     this.call_.onremotestreamadded = this.onRemoteStreamAdded_.bind(this);
-    this.call_.onlocalstreamadded = this.onLocalStreamAdded_.bind(this);
-    this.call_.onsignalingstatechange = this.infoBox_.updateInfoDiv.bind(this.infoBox_);
-    this.call_.oniceconnectionstatechange = this.infoBox_.updateInfoDiv.bind(this.infoBox_);
-    this.call_.onnewicecandidate = this.infoBox_.recordIceCandidateTypes.bind(this.infoBox_);
+    this.call_.onremotestreamremoved = this.onRemoteStreamRemoved_.bind(this);
     this.call_.onerror = this.displayError_.bind(this);
     this.call_.onstatusmessage = this.displayStatus_.bind(this);
     this.call_.oncallerstarted = this.displaySharingInfo_.bind(this);
@@ -108,9 +89,6 @@ AppController.prototype.showRoomSelection_ = function () {
         this.finishCallSetup_(roomName);
         this.roomSelection_.removeEventListeners();
         this.roomSelection_ = null;
-        if (this.localStream_) {
-            this.attachLocalStream_();
-        }
     }.bind(this);
 };
 AppController.prototype.setupUi_ = function () {
@@ -172,90 +150,119 @@ AppController.prototype.onRemoteSdpSet_ = function (hasRemoteVideo) {
 };
 AppController.prototype.waitForRemoteVideo_ = function () {
     trace("AppController.prototype.waitForRemoteVideo_()");
-    if (this.remoteVideo_.readyState >= 2) {
-        trace("Remote video started; currentTime: " + this.remoteVideo_.currentTime);
-        this.transitionToActive_();
-    } else {
-        this.remoteVideo_.oncanplay = this.waitForRemoteVideo_.bind(this);
+    for (let remoteVideo of remoteVideos.values()) {
+        if (remoteVideo.readyState >= 2) {
+            trace("Remote video started; currentTime: " + remoteVideo.currentTime);
+            this.transitionToActive_(remoteVideo);
+        } else {
+            remoteVideo.oncanplay = this.waitForRemoteVideo_.bind(this);
+        }
     }
 };
+
+AppController.prototype.addStream_ = function (stream) {
+    if (remoteVideos.has(stream) === true) {
+        return false;
+    }
+
+    var divto = document.getElementById("videos");
+    var obj = document.createElement("video");
+    if (obj !== null) {
+        obj.id = stream.id;
+        obj.autoplay = true;
+        obj.setAttribute('playsinline', 'playsinline');
+        obj.classList = "remote-video";
+        if (stream.id.includes("loopback")) {
+            obj.muted = true;
+        } else {
+            obj.muted = false;
+        }
+        divto.appendChild(obj);
+        remoteVideos.set(stream, obj);
+        obj.srcObject = stream;
+
+        /* Recalculate video positions */
+        var i = 0;
+        for (let remoteVideo of remoteVideos.values()) {
+            remoteVideo.style.height = '100%';
+            remoteVideo.style.width = 100/remoteVideos.size + '%';
+            remoteVideo.style.maxheight = '100%';
+            remoteVideo.style.maxwidth = 100 / remoteVideos.size + '%';
+            remoteVideo.style.left = '' + (i * (screen.width / remoteVideos.size));
+            remoteVideo.style.top = '0';
+            remoteVideo.style.border = '1';
+            ++i;
+            this.transitionToActive_(remoteVideo);
+        }
+        return true;
+    } else {
+        return false;
+    }
+}
 AppController.prototype.onRemoteStreamAdded_ = function (stream) {
     trace("AppController.prototype.onRemoteStreamAdded_()");
     this.deactivate_(this.sharingDiv_);
     trace("Remote stream added.");
-    this.remoteVideo_.srcObject = stream;
-    this.infoBox_.getRemoteTrackIds(stream);
+    this.addStream_(stream);
     if (this.remoteVideoResetTimer_) {
         clearTimeout(this.remoteVideoResetTimer_);
         this.remoteVideoResetTimer_ = null;
     }
 };
-AppController.prototype.onLocalStreamAdded_ = function (stream) {
-    trace("AppController.prototype.onLocalStreamAdded_()");
-    trace("User has granted access to local media.");
-    this.localStream_ = stream;
-    this.infoBox_.getLocalTrackIds(this.localStream_);
-    if (!this.roomSelection_) {
-        this.attachLocalStream_();
-    }
+AppController.prototype.onRemoteStreamRemoved_ = function (stream) {
+    trace("AppController.prototype.onRemoteStreamAdded_()");
+    this.deactivate_(this.sharingDiv_);
+    trace("Remote stream removed.");
+    this.addStream_(stream);
 };
-AppController.prototype.attachLocalStream_ = function () {
-    trace("AppController.prototype.attachLocalStream_()");
-    trace("Attaching local stream.");
-    this.localVideo_.srcObject = this.localStream_;
-    this.displayStatus_("");
-    this.activate_(this.localVideo_);
-    this.show_(this.icons_);
-    if (this.localStream_.getVideoTracks().length === 0) {
-        this.hide_($(UI_CONSTANTS.muteVideoSvg));
+AppController.prototype.transitionToActive_ = function (video) {
+    trace("AppController.prototype.transitionToActive_()" + video);
+
+    if (video === null) {
+        var connectTime = window.performance.now();
+        trace("Call setup time: " + (connectTime - this.call_.startTime).toFixed(0) + "ms.");
+        for (let remoteVideo of remoteVideos.values()) {
+            remoteVideo.oncanplay = undefined;
+            this.activate_(remoteVideo);
+        }
+    } else {
+        video.oncanplay = undefined;
+        this.activate_(video);
     }
-    if (this.localStream_.getAudioTracks().length === 0) {
-        this.hide_($(UI_CONSTANTS.muteAudioSvg));
-    }
-};
-AppController.prototype.transitionToActive_ = function () {
-    trace("AppController.prototype.transitionToActive_()");
-    this.remoteVideo_.oncanplay = undefined;
-    var connectTime = window.performance.now();
-    this.infoBox_.setSetupTimes(this.call_.startTime, connectTime);
-    this.infoBox_.updateInfoDiv();
-    trace("Call setup time: " + (connectTime - this.call_.startTime).toFixed(0) + "ms.");
-    trace("reattachMediaStream: " + this.localVideo_.srcObject);
-    this.miniVideo_.srcObject = this.localVideo_.srcObject;
-    this.activate_(this.remoteVideo_);
-    this.activate_(this.miniVideo_);
-    this.deactivate_(this.localVideo_);
-    this.localVideo_.srcObject = null;
     this.activate_(this.videosDiv_);
+    this.show_(this.icons_);
     this.show_(this.hangupSvg_);
     this.displayStatus_("");
 };
 AppController.prototype.transitionToWaiting_ = function () {
     trace("AppController.prototype.transitionToWaiting_()");
-    this.remoteVideo_.oncanplay = undefined;
     this.hide_(this.hangupSvg_);
     this.deactivate_(this.videosDiv_);
     if (!this.remoteVideoResetTimer_) {
         this.remoteVideoResetTimer_ = setTimeout(function () {
             this.remoteVideoResetTimer_ = null;
             trace("Resetting remoteVideo src after transitioning to waiting.");
-            this.remoteVideo_.srcObject = null;
+            for (let remoteVideo of remoteVideos.values()) {
+                remoteVideo.srcObject = null;
+            }
         }.bind(this), 800);
     }
-    this.localVideo_.srcObject = this.miniVideo_.srcObject;
-    this.activate_(this.localVideo_);
-    this.deactivate_(this.remoteVideo_);
-    this.deactivate_(this.miniVideo_);
+    remoteVideos.forEach(function (value2, value, set) {
+        value2.oncanplay = undefined;
+        this.deactivate_(value2);
+    }, this);
 };
 AppController.prototype.transitionToDone_ = function () {
     trace("AppController.prototype.transitionToDone_()");
-    this.remoteVideo_.oncanplay = undefined;
-    this.deactivate_(this.localVideo_);
-    this.deactivate_(this.remoteVideo_);
-    this.deactivate_(this.miniVideo_);
+    for (let remoteVideo of remoteVideos.values()) {
+        remoteVideo.oncanplay = undefined;
+        this.deactivate_(remoteVideo);
+    }
     this.hide_(this.hangupSvg_);
     this.activate_(this.rejoinDiv_);
     this.show_(this.rejoinDiv_);
+    this.videosDiv_.innerHTML = '';
+    remoteVideos.clear();
     this.displayStatus_("");
 };
 AppController.prototype.onRejoinClick_ = function () {
@@ -290,21 +297,15 @@ AppController.prototype.onKeyPress_ = function (event) {
         case "f":
             this.toggleFullScreen_();
             return false;
-        case "i":
-            this.infoBox_.toggleInfoDiv();
-            return false;
         case "q":
             this.hangup_();
-            return false;
-        case "l":
-            this.toggleMiniVideo_();
             return false;
         default:
             return;
     }
 };
 AppController.prototype.pushCallNavigation_ = function (roomId, roomLink) {
-    trace("AppController.prototype.onLocalStreamAdded_()");
+    trace("AppController.prototype.pushCallNavigation_()");
     if (!isChromeApp()) {
         window.history.pushState({ "roomId": roomId, "roomLink": roomLink }, roomId, roomLink);
     }
@@ -329,10 +330,9 @@ AppController.prototype.displayStatus_ = function (status) {
 AppController.prototype.displayError_ = function (error) {
     trace("AppController.prototype.displayError_()");
     trace(error);
-    this.infoBox_.pushErrorMessage(error);
 };
 AppController.prototype.toggleAudioMute_ = function () {
-    trace("AppController.prototype.onLocalStreamAdded_()");
+    trace("AppController.prototype.toggleAudioMute_()");
     this.call_.toggleAudioMute();
     this.muteAudioIconSet_.toggle();
 };
@@ -353,14 +353,6 @@ AppController.prototype.toggleFullScreen_ = function () {
         document.body.requestFullScreen();
     }
     this.fullscreenIconSet_.toggle();
-};
-AppController.prototype.toggleMiniVideo_ = function () {
-    trace("AppController.prototype.toggleMiniVideo_()");
-    if (this.miniVideo_.classList.contains("active")) {
-        this.deactivate_(this.miniVideo_);
-    } else {
-        this.activate_(this.miniVideo_);
-    }
 };
 AppController.prototype.hide_ = function (element) {
     trace("AppController.prototype.hide_()");
@@ -386,7 +378,7 @@ AppController.prototype.showIcons_ = function () {
     }
 };
 AppController.prototype.hideIcons_ = function () {
-    trace("AppController.prototype.onLocalStreamAdded_()");
+    trace("AppController.prototype.hideIcons_()");
     if (this.icons_.classList.contains("active")) {
         this.deactivate_(this.icons_);
     }

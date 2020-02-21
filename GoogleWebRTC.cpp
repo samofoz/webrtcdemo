@@ -319,7 +319,7 @@ public:
 	}
 	virtual void OnTrack(rtc::scoped_refptr<webrtc::RtpTransceiverInterface> transceiver) {
 		std::ostringstream stream_id;
-		stream_id << pcgs_webrtc_instance_ << "-" << "loopback";
+		stream_id << "loopback" << "-" << pcgs_webrtc_instance_;
 		pcgs_webrtc_instance_->peer_connection->AddTrack(transceiver->receiver()->track(), { stream_id.str() });
 		if (transceiver->receiver()->track()->kind() == webrtc::MediaStreamTrackInterface::kAudioKind) {
 			class cgs_webrtc_audio_track_sink* psink = new cgs_webrtc_audio_track_sink(pcgs_webrtc_, pcgs_webrtc_instance_);
@@ -557,7 +557,7 @@ int cgs_webrtc_add_to_conference(struct cgs_webrtc_instance* pcgs_webrtc_instanc
 		if (pwi && (pwi != pcgs_webrtc_instance)) {
 			for (auto const& track : pcgs_webrtc_instance->tracks) {
 				std::ostringstream stream_id;
-				stream_id << pcgs_webrtc_instance << pwi;
+				stream_id << "stream-" << pcgs_webrtc_instance << pwi;
 				auto result_or_error = pwi->peer_connection->AddTrack(track.first, { stream_id.str() });
 				if (!result_or_error.ok()) {
 					//result_or_error.error().message()
@@ -565,7 +565,7 @@ int cgs_webrtc_add_to_conference(struct cgs_webrtc_instance* pcgs_webrtc_instanc
 			}
 			for (auto const& track : pwi->tracks) {
 				std::ostringstream stream_id;
-				stream_id << pwi << pcgs_webrtc_instance;
+				stream_id << "stream-" << pwi << pcgs_webrtc_instance;
 				auto result_or_error = pcgs_webrtc_instance->peer_connection->AddTrack(track.first, { stream_id.str() });
 				if (!result_or_error.ok()) {
 					//result_or_error.error().message()
