@@ -72,10 +72,12 @@ AppController.prototype.createCall_ = function () {
     this.call_.onremotehangup = this.onRemoteHangup_.bind(this);
     this.call_.onremotesdpset = this.onRemoteSdpSet_.bind(this);
     this.call_.onremotestreamadded = this.onRemoteStreamAdded_.bind(this);
-    this.call_.onremotestreamremoved = this.onRemoteStreamRemoved_.bind(this);
+    this.call_.onremovetrack = this.onRemoteStreamRemoved_.bind(this);
     this.call_.onerror = this.displayError_.bind(this);
     this.call_.onstatusmessage = this.displayStatus_.bind(this);
     this.call_.oncallerstarted = this.displaySharingInfo_.bind(this);
+    document.onresize = this.onResize_.bind(this);
+    window.onresize = this.onResize_.bind(this);
 };
 AppController.prototype.showRoomSelection_ = function () {
     trace("AppController.prototype.showRoomSelection_()");
@@ -159,6 +161,27 @@ AppController.prototype.waitForRemoteVideo_ = function () {
         }
     }
 };
+AppController.prototype.onResize_ = function () {
+    /* Recalculate video positions */
+    var i = 0;
+    for (let remoteVideo of remoteVideos.values()) {
+        remoteVideo.style.height = '100%';
+        remoteVideo.style.width = 100 / remoteVideos.size + '%';
+        remoteVideo.style.maxheight = '100%';
+        remoteVideo.style.maxwidth = 100 / remoteVideos.size + '%';
+        remoteVideo.style.left = Math.floor(parseFloat(i * (window.innerWidth / remoteVideos.size))) + 'px';
+        remoteVideo.style.top = '0px';
+        remoteVideo.style.border = '10px';
+        ++i;
+        this.transitionToActive_(remoteVideo);
+    }
+    if (remoteVideos.size === 1) {
+        this.displaySharingInfo_();
+    } else {
+        this.deactivate_(this.sharingDiv_);
+    }
+    return;
+};
 
 AppController.prototype.addStream_ = function (stream) {
     if (remoteVideos.has(stream) === true) {
@@ -182,38 +205,47 @@ AppController.prototype.addStream_ = function (stream) {
         obj.srcObject = stream;
 
         /* Recalculate video positions */
-        var i = 0;
-        for (let remoteVideo of remoteVideos.values()) {
-            remoteVideo.style.height = '100%';
-            remoteVideo.style.width = 100/remoteVideos.size + '%';
-            remoteVideo.style.maxheight = '100%';
-            remoteVideo.style.maxwidth = 100 / remoteVideos.size + '%';
-            remoteVideo.style.left = '' + (i * (screen.width / remoteVideos.size));
-            remoteVideo.style.top = '0';
-            remoteVideo.style.border = '1';
-            ++i;
-            this.transitionToActive_(remoteVideo);
-        }
+        this.onResize_.call(this);
         return true;
     } else {
         return false;
     }
-}
+};
+AppController.prototype.removeStream_ = function (stream) {
+    trace("AppController.prototype.removeStream_()");
+    var divto = document.getElementById("videos");
+    var obj = remoteVideos.get(stream);
+    if (obj !== null) {
+        divto.removeChild(obj);
+        remoteVideos.delete(stream);
+
+        /* Recalculate video positions */
+        this.onResize_.call(this);
+        return true;
+    } else {
+        return false;
+    }
+};
+
 AppController.prototype.onRemoteStreamAdded_ = function (stream) {
     trace("AppController.prototype.onRemoteStreamAdded_()");
-    this.deactivate_(this.sharingDiv_);
     trace("Remote stream added.");
     this.addStream_(stream);
+ 
     if (this.remoteVideoResetTimer_) {
         clearTimeout(this.remoteVideoResetTimer_);
         this.remoteVideoResetTimer_ = null;
     }
 };
-AppController.prototype.onRemoteStreamRemoved_ = function (stream) {
-    trace("AppController.prototype.onRemoteStreamAdded_()");
-    this.deactivate_(this.sharingDiv_);
-    trace("Remote stream removed.");
-    this.addStream_(stream);
+AppController.prototype.onRemoteStreamRemoved_ = function (streamid) {
+    trace("AppController.prototype.onRemoteStreamRemoved_()");
+    trace("Remote stream removed:" + streamid);
+    for (let stream of remoteVideos.keys()) {
+        if (stream.id === streamid) {
+            this.removeStream_(stream);
+            return;
+        }
+    }
 };
 AppController.prototype.transitionToActive_ = function (video) {
     trace("AppController.prototype.transitionToActive_()" + video);

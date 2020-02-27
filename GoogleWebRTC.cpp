@@ -58,7 +58,7 @@ struct cgs_webrtc_instance {
 	void* user_context;
 	rtc::scoped_refptr<webrtc::PeerConnectionInterface> peer_connection;
 	cgs_webrtc_peer_connection_observer* peer_connection_observer;
-	std::list<std::pair<webrtc::MediaStreamTrackInterface*, void *>> tracks;
+	std::list<std::pair<webrtc::MediaStreamTrackInterface*, struct cgs_webrtc_track_list_entry*>> tracks;
 };
 
 
@@ -68,6 +68,17 @@ struct cgs_webrtc_conference {
 	std::list<struct cgs_webrtc_instance*> pwebrtc_instance_list;
 	void* user_context;
 };
+
+
+struct cgs_webrtc_track_list_entry {
+	union {
+		class cgs_webrtc_audio_track_sink* psink_audio;
+		class cgs_webrtc_video_track_sink* psink_video;
+
+	};
+	std::string stream_id;
+};
+
 
 
 int cgs_webrtc_init(struct cgs_webrtc** pcgs_webrtc, cgs_webrtc_event_callback callback) {
@@ -120,7 +131,7 @@ int cgs_webrtc_init(struct cgs_webrtc** pcgs_webrtc, cgs_webrtc_event_callback c
 #if 0
 			return FakeAudioCaptureModule::Create();
 #else
-			return webrtc::AudioDeviceModule::Create(webrtc::AudioDeviceModule::kPlatformDefaultAudio, webrtc::CreateDefaultTaskQueueFactory().get());
+			return webrtc::AudioDeviceModule::Create(webrtc::AudioDeviceModule::kDummyAudio, webrtc::CreateDefaultTaskQueueFactory().get());
 #endif
 		});
 	if (!(*pcgs_webrtc)->audio_device) {
@@ -133,7 +144,11 @@ int cgs_webrtc_init(struct cgs_webrtc** pcgs_webrtc, cgs_webrtc_event_callback c
 											(*pcgs_webrtc)->network_thread.get() /* network_thread */, 
 											(*pcgs_webrtc)->worker_thread.get() /* worker_thread */,
 											(*pcgs_webrtc)->signaling_thread.get() /* signaling_thread */, 
-											(*pcgs_webrtc)->audio_device /* default_adm */,//nullptr,//
+#ifndef _DEBUG
+											nullptr,/* default_adm */
+#else
+											(*pcgs_webrtc)->audio_device ,////
+#endif
 											webrtc::CreateBuiltinAudioEncoderFactory(),
 											webrtc::CreateBuiltinAudioDecoderFactory(),
 											webrtc::CreateBuiltinVideoEncoderFactory(),
@@ -322,15 +337,16 @@ public:
 		stream_id << "loopback" << "-" << pcgs_webrtc_instance_;
 		pcgs_webrtc_instance_->peer_connection->AddTrack(transceiver->receiver()->track(), { stream_id.str() });
 		if (transceiver->receiver()->track()->kind() == webrtc::MediaStreamTrackInterface::kAudioKind) {
-			class cgs_webrtc_audio_track_sink* psink = new cgs_webrtc_audio_track_sink(pcgs_webrtc_, pcgs_webrtc_instance_);
-			pcgs_webrtc_instance_->tracks.push_back(std::make_pair(transceiver->receiver()->track(), psink));
-			((webrtc::AudioTrackInterface*)transceiver->receiver()->track().get())->AddSink(psink);
-			//transceiver->receiver()->track()->set_enabled(false);
+			cgs_webrtc_track_list_entry* entry = new cgs_webrtc_track_list_entry;
+			entry->psink_audio = new cgs_webrtc_audio_track_sink(pcgs_webrtc_, pcgs_webrtc_instance_);
+			pcgs_webrtc_instance_->tracks.push_back(std::make_pair(transceiver->receiver()->track(), entry));
+			((webrtc::AudioTrackInterface*)transceiver->receiver()->track().get())->AddSink(entry->psink_audio);
 		}
 		else {
-			class cgs_webrtc_video_track_sink* psink = new cgs_webrtc_video_track_sink(pcgs_webrtc_, pcgs_webrtc_instance_);
-			pcgs_webrtc_instance_->tracks.push_back(std::make_pair(transceiver->receiver()->track(), psink));
-			((webrtc::VideoTrackInterface*)transceiver->receiver()->track().get())->AddOrUpdateSink(psink, rtc::VideoSinkWants());
+			cgs_webrtc_track_list_entry* entry = new cgs_webrtc_track_list_entry;
+			entry->psink_video = new cgs_webrtc_video_track_sink(pcgs_webrtc_, pcgs_webrtc_instance_);
+			pcgs_webrtc_instance_->tracks.push_back(std::make_pair(transceiver->receiver()->track(), entry));
+			((webrtc::VideoTrackInterface*)transceiver->receiver()->track().get())->AddOrUpdateSink(entry->psink_video, rtc::VideoSinkWants());
 		}
 		cgs_webrtc_event event;
 		event.code = CGS_WEBRTC_EVENT_TRACK;
@@ -557,18 +573,20 @@ int cgs_webrtc_add_to_conference(struct cgs_webrtc_instance* pcgs_webrtc_instanc
 		if (pwi && (pwi != pcgs_webrtc_instance)) {
 			for (auto const& track : pcgs_webrtc_instance->tracks) {
 				std::ostringstream stream_id;
-				stream_id << "stream-" << pcgs_webrtc_instance << pwi;
-				auto result_or_error = pwi->peer_connection->AddTrack(track.first, { stream_id.str() });
+				stream_id << "stream-" << pcgs_webrtc_instance;
+				track.second->stream_id = stream_id.str();
+				auto result_or_error = pwi->peer_connection->AddTrack(track.first, { track.second->stream_id });
 				if (!result_or_error.ok()) {
-					//result_or_error.error().message()
+					//std::cout << result_or_error.error().message();
 				}
 			}
 			for (auto const& track : pwi->tracks) {
 				std::ostringstream stream_id;
-				stream_id << "stream-" << pwi << pcgs_webrtc_instance;
-				auto result_or_error = pcgs_webrtc_instance->peer_connection->AddTrack(track.first, { stream_id.str() });
+				stream_id << "stream-" << pwi;
+				track.second->stream_id = stream_id.str();
+				auto result_or_error = pcgs_webrtc_instance->peer_connection->AddTrack(track.first, { track.second->stream_id });
 				if (!result_or_error.ok()) {
-					//result_or_error.error().message()
+					//std::cout << result_or_error.error().message();
 				}
 			}
 		}
@@ -583,6 +601,12 @@ int cgs_webrtc_remove_from_conference(struct cgs_webrtc_instance* pcgs_webrtc_in
 				for (auto const& pwi_sender : pwi->peer_connection->GetSenders()) {
 					if(pwi_sender->track() && track.first->id() == pwi_sender->track()->id()){
 						pwi->peer_connection->RemoveTrack(pwi_sender);
+
+						/* Fire a remove track event*/
+						cgs_webrtc_event event;
+						event.code = CGS_WEBRTC_EVENT_REMOVE_TRACK;
+						event.in = (void*)g_strdup(track.second->stream_id.c_str());
+						pwi->pcgs_webrtc->callback(pwi->pcgs_webrtc, pwi, &event, pwi->user_context);
 						break;
 					}
 				}
@@ -591,6 +615,12 @@ int cgs_webrtc_remove_from_conference(struct cgs_webrtc_instance* pcgs_webrtc_in
 				for (auto const& this_sender : pcgs_webrtc_instance->peer_connection->GetSenders()) {
 					if (this_sender->track() && track.first->id() == this_sender->track()->id()) {
 						pcgs_webrtc_instance->peer_connection->RemoveTrack(this_sender);
+
+						/* Fire a remove track event*/
+						cgs_webrtc_event event;
+						event.code = CGS_WEBRTC_EVENT_REMOVE_TRACK;
+						event.in = (void*)g_strdup(track.second->stream_id.c_str());
+						pcgs_webrtc_instance->pcgs_webrtc->callback(pcgs_webrtc_instance->pcgs_webrtc, pcgs_webrtc_instance, &event, pcgs_webrtc_instance->user_context);
 						break;
 					}
 				}
@@ -612,6 +642,10 @@ int cgs_webrtc_destroy_conference(struct cgs_webrtc_conference* pcgs_webrtc_conf
 int cgs_webrtc_destroy_instance(struct cgs_webrtc_instance* pcgs_webrtc_instance) {
 	pcgs_webrtc_instance->peer_connection->Close();
 	for (auto const& track : pcgs_webrtc_instance->tracks) {
+		if(track.first->kind() == webrtc::MediaStreamTrackInterface::kAudioKind)
+			delete track.second->psink_audio;
+		else
+			delete track.second->psink_video;
 		delete track.second;
 	}
 	pcgs_webrtc_instance->tracks.clear();

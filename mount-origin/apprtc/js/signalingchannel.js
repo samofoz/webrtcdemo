@@ -8,6 +8,7 @@
     this.registered_ = false;
     this.onerror = null;
     this.onmessage = null;
+     window.onbeforeunload = function () { this.websocket_.close(); }.bind(this);
 };
 SignalingChannel.prototype.open = function () {
     trace("SignalingChannel.prototype.open()");
@@ -21,8 +22,8 @@ SignalingChannel.prototype.open = function () {
         this.websocket_.onopen = function () {
             trace("SignalingChannel.websocket_.onopen()");
             trace("Signaling channel opened.");
-            this.websocket_.onerror = function () {
-                trace("Signaling channel error.");
+            this.websocket_.onerror = function (event) {
+                trace("Signaling channel error with code:" + event.code + " reason:" + event.reason);
             };
             this.websocket_.onclose = function (event) {
                 trace("SignalingChannel.websocket_.onclose()");

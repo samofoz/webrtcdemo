@@ -280,16 +280,14 @@ int main()
 					free(event->in);//Not to be deleted using delete
 					break;
 				case CGS_EVENT_WEBRTC_RENEGOTIATION_NEEDED:
-					printf("\n\ncgs_webrtc_create_offer()\n\n");
 					pcgs_tasklet_info->remote_description_set = pcgs_tasklet_info->local_description_set = false;
 					cgs_webrtc_create_offer(pcgs_tasklet_info->webrtc_instance);
 					break;
 				case CGS_EVENT_WEBRTC_SET_REMOTE_SESSION_DESCRIPTION_DONE:
 					pcgs_tasklet_info->remote_description_set = true;
-					cgs_webrtc_add_to_conference(pcgs_tasklet_info->webrtc_instance, g_task_info.pcgs_webrtc_conference);
 					if (!pcgs_tasklet_info->local_description_set) {
+						cgs_webrtc_add_to_conference(pcgs_tasklet_info->webrtc_instance, g_task_info.pcgs_webrtc_conference);
 						cgs_webrtc_create_answer(pcgs_tasklet_info->webrtc_instance);
-						printf("\n\ncgs_webrtc_create_answer()\n\n");
 					}
 					break;
 				case CGS_EVENT_WEBRTC_SET_REMOTE_SESSION_DESCRIPTION_FAILED:
@@ -298,6 +296,7 @@ int main()
 					json_t* ice_candidate;
 					pcgs_tasklet_info->local_description_set = true;
 					if (pcgs_tasklet_info->local_description_set && pcgs_tasklet_info->remote_description_set) {
+						cgs_webrtc_add_to_conference(pcgs_tasklet_info->webrtc_instance, g_task_info.pcgs_webrtc_conference);
 						while (ice_candidate = (json_t*)g_async_queue_try_pop(pcgs_tasklet_info->ice_candidate_queue)) {
 							cgs_webrtc_add_ice_candiate(pcgs_tasklet_info->webrtc_instance,
 								json_string_value(json_object_get(ice_candidate, "sdpMid")),
@@ -327,6 +326,15 @@ int main()
 						cgs_websockets_send(pcgs_tasklet_info->websocket_instance, (char*)event->in, strlen((char*)event->in));
 					}
 					break;
+				case CGS_EVENT_WEBRTC_REMOVE_TRACK:
+					if (event->in) {
+						json_t* json_candidate = json_pack("{ssss}", "type", "removetrack", "streamid", (char*)event->in);
+						char* json = json_dumps(json_candidate, JSON_COMPACT);
+						cgs_websockets_send(pcgs_tasklet_info->websocket_instance, json, strlen(json));
+						json_decref(json_candidate);
+						g_free(event->in);
+						break;
+					}
 				default:
 					break;
 				}
@@ -506,6 +514,7 @@ int cgs_webrtc_callback(cgs_webrtc* pcgs_webrtc, cgs_webrtc_instance* pcgs_webrt
 		event->event = CGS_EVENT_WEBRTC_TRACK;
 		break;
 	case CGS_WEBRTC_EVENT_REMOVE_TRACK:
+		event->in = pevent->in;
 		event->event = CGS_EVENT_WEBRTC_REMOVE_TRACK;
 		break;
 	case CGS_WEBRTC_EVENT_SET_REMOTE_SESSION_DESCRIPTION_DONE:

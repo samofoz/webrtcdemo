@@ -5,6 +5,8 @@
 struct cgs_webrtc;
 struct cgs_webrtc_instance;
 struct cgs_webrtc_conference;
+struct cgs_webrtc_track_list_entry;
+
 
 enum cgs_webrtc_event_code {
 	CGS_WEBRTC_EVENT_UNKNOWN,

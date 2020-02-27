@@ -26,6 +26,10 @@ int cgs_websockets_lws_callback(struct lws* wsi, enum lws_callback_reasons reaso
 gpointer cgs_websockets_lws_service_thread(gpointer threadid);
 
 
+void log_emit_function(int level, const char* line) {
+	printf("\n\nlibwebsockets::%d::%s", level, line);
+}
+
 int cgs_websockets_init(struct cgs_websockets** pcgs_websockets, cgs_websockets_event_callback callback)
 {
 	int ret;
@@ -94,6 +98,8 @@ int cgs_websockets_init(struct cgs_websockets** pcgs_websockets, cgs_websockets_
 		goto GET_OUT;
 	}
 
+	lws_set_log_level(4095, log_emit_function);
+
 	(*pcgs_websockets)->callback = callback;
 	ret = CGS_WEBSOCKETS_ERROR_SUCCESS;
 
@@ -133,16 +139,14 @@ int cgs_websockets_send(struct cgs_websockets_instance* pcgs_websockets_instance
 		goto GET_OUT;
 	}
 
-	buf->buf = (char*)malloc(len + LWS_PRE + 1);
+	buf->len = len + LWS_PRE;
+	buf->buf = (char*)malloc(buf->len);
 	if (buf->buf == NULL) {
 		free(buf);
 		ret = CGS_WEBSOCKETS_ERROR_NOMEM;
 		goto GET_OUT;
 	}
-	buf->len = len + LWS_PRE + 1;
-
 	memcpy(buf->buf + LWS_PRE, out, len);
-	buf->buf[LWS_PRE + len] = 0;
 
 	g_async_queue_push(pcgs_websockets_instance->lws_send_queue, buf);
 	g_async_queue_push(pcgs_websockets_instance->pcgs_websockets->lws_writable_instances_queue, pcgs_websockets_instance);
@@ -220,7 +224,7 @@ int cgs_websockets_lws_callback(struct lws* wsi, enum lws_callback_reasons reaso
 		break;
 
 	case LWS_CALLBACK_CLOSED:
-		printf("\n\nLWS_CALLBACK_CLOSED\n\n");
+		printf("\n\nLWS_CALLBACK_CLOSED %p\n\n", wsi);
 		pwebsockets_instance = *ppwebsockets_instance;
 		event.code = CGS_WEBSOCKET_EVENT_DISCONNECTED;
 		break;
@@ -271,7 +275,7 @@ int cgs_websockets_lws_callback(struct lws* wsi, enum lws_callback_reasons reaso
 		pwebsockets_instance = *ppwebsockets_instance;
 		if (g_async_queue_length(pwebsockets_instance->lws_send_queue)) {
 			struct cgs_websockets_buffer* buf = (struct cgs_websockets_buffer*)g_async_queue_pop(pwebsockets_instance->lws_send_queue);
-			if (lws_write(wsi, LWS_PRE + (unsigned char*)buf->buf, buf->len - LWS_PRE - 1, LWS_WRITE_TEXT) >= 0) {
+			if (lws_write(wsi, LWS_PRE + (unsigned char*)buf->buf, buf->len - LWS_PRE, LWS_WRITE_TEXT) >= 0) {
 				event.code = CGS_WEBSOCKET_EVENT_SENT;
 				event.in = buf;
 			}
@@ -304,6 +308,7 @@ int cgs_websockets_lws_callback(struct lws* wsi, enum lws_callback_reasons reaso
 	}
 
 	default:
+		printf("\n\nGot websocket event %d : %p\n\n", reason, wsi);
 		return 0;
 		break;
 	}

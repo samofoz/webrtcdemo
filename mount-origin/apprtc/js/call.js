@@ -1,9 +1,10 @@
-var Call = function (params) {
+var Call = function (params, onremotestreamremoved) {
     trace("Call()");
     this.params_ = params;
     this.roomServer_ = params.roomServer || "";
     this.channel_ = new SignalingChannel(params.wssUrl, params.wssPostUrl);
     this.channel_.onmessage = this.onRecvSignalingChannelMessage_.bind(this);
+    this.onremotestreamremoved = onremotestreamremoved;
     this.pcClient_ = null;
     this.localStream_ = null;
     this.errorMessageQueue_ = [];
@@ -16,7 +17,6 @@ var Call = function (params) {
     this.onremotehangup = null;
     this.onremotesdpset = null;
     this.onremotestreamadded = null;
-    this.onremotestreamremoved = null;
     this.onsignalingstatechange = null;
     this.onstatusmessage = null;
     this.getMediaPromise_ = null;
@@ -317,9 +317,9 @@ Call.prototype.createPcClient_ = function () {
     this.pcClient_ = new PeerConnectionClient(this.params_, this.startTime);
     this.pcClient_.onsignalingmessage = this.sendSignalingMessage_.bind(this);
     this.pcClient_.onremotehangup = this.onremotehangup;
+    this.pcClient_.onremovetrack = this.onremovetrack;
     this.pcClient_.onremotesdpset = this.onremotesdpset;
     this.pcClient_.onremotestreamadded = this.onremotestreamadded;
-    this.pcClient_.onremotestreamremoved = this.onremotestreamremoved;
     this.pcClient_.onsignalingstatechange = this.onsignalingstatechange;
     this.pcClient_.oniceconnectionstatechange = this.oniceconnectionstatechange;
     this.pcClient_.onnewicecandidate = this.onnewicecandidate;
@@ -359,29 +359,6 @@ Call.prototype.joinRoom_ = function () {
             messages: ''
         };
         resolve(roomParams);
-        /*
-                var path = this.roomServer_ + "/join/" + this.params_.roomId + window.location.search;
-                sendAsyncUrlRequest("POST", path).then(function (response) {
-                    var responseObj = parseJSON(response);
-                    if (!responseObj) {
-                        reject(Error("Error parsing response JSON."));
-                        return;
-                    }
-                    if (responseObj.result !== "SUCCESS") {
-                        reject(Error("Registration error: " + responseObj.result));
-                        if (responseObj.result === "FULL") {
-                            var getPath = this.roomServer_ + "/r/" + this.params_.roomId + window.location.search;
-                            window.location.assign(getPath);
-                        }
-                        return;
-                    }
-                    trace("Joined the room.");
-                    resolve(responseObj.params);
-                }.bind(this)).catch(function (error) {
-                    reject(Error("Failed to join the room: " + error.message));
-                    return;
-                }.bind(this));
-        */
     }.bind(this));
 };
 Call.prototype.onRecvSignalingChannelMessage_ = function (msg) {
@@ -392,17 +369,6 @@ Call.prototype.sendSignalingMessage_ = function (message) {
     trace("Call.prototype.sendSignalingMessage_()");
     var msgString = JSON.stringify(message);
     this.channel_.send(msgString);
-    /*
-        if (this.params_.isInitiator) {
-            var path = this.roomServer_ + "/message/" + this.params_.roomId + "/" + this.params_.clientId + window.location.search;
-            var xhr = new XMLHttpRequest;
-            xhr.open("POST", path, true);
-            xhr.send(msgString);
-            trace("C->GAE: " + msgString);
-        } else {
-            this.channel_.send(msgString);
-        }
-    */
 };
 Call.prototype.onError_ = function (message) {
     trace("Call.prototype.onError_()");
