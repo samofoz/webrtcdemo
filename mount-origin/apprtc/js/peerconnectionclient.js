@@ -8,6 +8,7 @@ var PeerConnectionClient = function (params, startTime) {
     this.pc_.ontrack = this.onRemoteStreamAdded_.bind(this);
     this.pc_.onsignalingstatechange = this.onSignalingStateChanged_.bind(this);
     this.pc_.oniceconnectionstatechange = this.onIceConnectionStateChanged_.bind(this);
+    this.pc_.onnegotiationneeded = this.onNegotiationNeeded_.bind(this);
     window.dispatchEvent(new CustomEvent("pccreated", { detail: { pc: this, time: new Date, userId: this.params_.roomId + (this.isInitiator_ ? "-0" : "-1"), sessionId: this.params_.roomId } }));
     this.hasRemoteSdp_ = false;
     this.messageQueue_ = [];
@@ -28,8 +29,29 @@ PeerConnectionClient.prototype.addStream = function (stream) {
     if (!this.pc_) {
         return;
     }
+/*
+    if (this.localstream.id !== stream.id) {
+        console.log(this.localstream);
+        console.log(stream);
+        stream.addTrack(this.localstream.getAudioTracks()[0]);
+        for (let track of this.localstream.getTracks()) {
+            for (let sender of this.pc_.getSenders()) {
+                if (sender.track && (sender.track.id === track.id)) {
+                    this.pc_.removeTrack(sender);
+                    console.log("-----------Removed track " + track.id);
+                    break;
+                }
+            }
+        }
+    }
+*/
     this.pc_.addStream(stream);
 };
+
+PeerConnectionClient.prototype.onNegotiationNeeded_ = function () {
+    this.pc_.createOffer().then(this.setLocalSdpAndNotify_.bind(this)).catch(this.onError_.bind(this, "createOffer"));
+};
+
 PeerConnectionClient.prototype.startAsCaller = function (offerOptions) {
     trace("PeerConnectionClient.prototype.startAsCaller()");
     if (!this.pc_) {

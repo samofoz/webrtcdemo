@@ -63,7 +63,7 @@ int cgs_websockets_init(struct cgs_websockets** pcgs_websockets, cgs_websockets_
 	static struct lws_protocols protocols[] = {
 		{ "http", lws_callback_http_dummy, 0, 0 },
 		{ "https", lws_callback_http_dummy, 0, 0 },
-		{"lws-minimal", cgs_websockets_lws_callback, sizeof(struct cgs_websockets_instance *)},
+		{"lws-minimal", cgs_websockets_lws_callback, sizeof(struct cgs_websockets_instance *), 0, 1024},
 		{ NULL, NULL, 0, 0 } /* terminator */
 	};
 	protocols[2].user = *pcgs_websockets;

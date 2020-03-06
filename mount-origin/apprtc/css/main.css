@@ -68,7 +68,7 @@ div.warning {
 #videos {
 	font-size: 0; /* to fix whitespace/scrollbars problem */
 	height: 100%;
-	pointer-events: none;
+	pointer-events: auto;
 	position: absolute;
 	transition: all 1s;
 	width: 100%;
@@ -381,6 +381,19 @@ svg {
 	}
 
 		#switch-video:hover circle {
+			fill: #407cf7;
+		}
+
+#share-screen {
+	transition: 280ms;
+}
+
+	#share-screen:hover,
+	#share-screen.on {
+		background: #407cf7;
+	}
+
+		#share-screen:hover circle {
 			fill: #407cf7;
 		}
 

@@ -7,6 +7,7 @@ var Call = function (params, onremotestreamremoved) {
     this.onremotestreamremoved = onremotestreamremoved;
     this.pcClient_ = null;
     this.localStream_ = null;
+    this.screenStream_ = null;
     this.errorMessageQueue_ = [];
     this.startTime = null;
     this.oncallerstarted = null;
@@ -187,6 +188,47 @@ Call.prototype.toggleAudioMute = function () {
     }
     trace("Audio " + (audioTracks[0].enabled ? "unmuted." : "muted."));
 };
+
+
+function _startScreenCapture() {
+    if (navigator.getDisplayMedia) {
+        return navigator.getDisplayMedia({ video: true, audio: true });
+    } else if (navigator.mediaDevices.getDisplayMedia) {
+        return navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    } else {
+        return navigator.mediaDevices.getUserMedia({ video: { mediaSource: 'screen' }, audio: true });
+    }
+};
+Call.prototype.onScreenStreamInactive_ = function(e) {
+    trace("------------------Call.prototype.onScreenStreamInactive_()");
+    if (this.screenStream_) {
+        for (let track of this.screenStream_.getTracks()) {
+            for (let sender of this.pcClient_.pc_.getSenders()) {
+                if (sender.track && (sender.track.id === track.id)) {
+                    this.pcClient_.pc_.removeTrack(sender);
+                    this.channel_.send(JSON.stringify({ type: "removetrack", streamid: this.screenStream_.id, trackid: track.id}));
+                    break;
+                }
+            }
+        }
+        this.screenStream_.getTracks().forEach(track => track.stop());
+        this.screenStream_ = null;
+    }
+};
+Call.prototype.toggleShareScreen = async function (shareScreenIconSet) {
+    trace("Call.prototype.toggleShareScreen()");
+    if (!this.screenStream_) {
+        this.screenStream_ = await _startScreenCapture();
+        if (this.screenStream_) {
+            console.log(this.screenStream_.getTracks().length);
+            this.screenStream_.oninactive = Call.prototype.onScreenStreamInactive_.bind(this);
+            this.pcClient_.addStream(this.screenStream_);
+        }
+    } else {
+        this.screenStream_.getTracks().forEach(track => track.stop());
+    }
+    shareScreenIconSet.toggle();
+};
 Call.prototype.connectToRoom_ = function (roomId) {
     trace("Call.prototype.connectToRoom_()");
     this.params_.roomId = roomId;
@@ -220,6 +262,7 @@ Call.prototype.connectToRoom_ = function (roomId) {
         this.onError_("WebSocket register error: " + error.message);
     }.bind(this));
 };
+
 Call.prototype.maybeGetMedia_ = function () {
     trace("Call.prototype.maybeGetMedia_()");
     var needStream = this.params_.mediaConstraints.audio !== false || this.params_.mediaConstraints.video !== false;
@@ -324,6 +367,8 @@ Call.prototype.createPcClient_ = function () {
     this.pcClient_.oniceconnectionstatechange = this.oniceconnectionstatechange;
     this.pcClient_.onnewicecandidate = this.onnewicecandidate;
     this.pcClient_.onerror = this.onerror;
+    this.pcClient_.localstream = this.localStream_;
+
     trace("Created PeerConnectionClient");
 };
 Call.prototype.startSignaling_ = function () {

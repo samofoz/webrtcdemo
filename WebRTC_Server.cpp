@@ -221,45 +221,63 @@ int main()
 			if (pcgs_tasklet_info) {
 				printf("\n\n[%s] Got event %s\n\n", event->context, cgs_get_event_str(event->event));
 				switch (event->event) {
-				case CGS_EVENT_WEBSOCKET_CONNECTED:
+				case CGS_EVENT_WEBSOCKET_CONNECTED: {
+					//cgs_websockets_send(pcgs_tasklet_info->websocket_instance, (char *)malloc(16500), 16500);
 					cgs_webrtc_create_instance(g_task_info.pcgs_webrtc, &pcgs_tasklet_info->webrtc_instance, event->context);
 					pcgs_tasklet_info->remote_description_set = false;
 					pcgs_tasklet_info->local_description_set = false;
 					pcgs_tasklet_info->ice_candidate_queue = g_async_queue_new_full(ice_candidate_queue_item_free);
 					break;
+				}
 				case CGS_EVENT_WEBSOCKET_RECEIVED: {
-					json_t* root, * sdp, * candidate;
+					json_t* root;
 					json_error_t error;
 
 					printf("\n\n\nReceived [%s]\n\n\n", (char*)event->in);
 					root = json_loads((char*)event->in, 0, &error);
-
 					if (!root) {
 						printf("Error parsing incoming message, line %d: %s\n", error.line, error.text);
 						break;
 					}
 					free(event->in); //Must not be freed using delete
-					sdp = json_object_get(root, "sdp");
-					if (!sdp) {
-						candidate = json_object_get(root, "candidate");
-						if (!candidate)
-							printf("Unknown incoming message\n");
-						else {
-							if (pcgs_tasklet_info->local_description_set && pcgs_tasklet_info->remote_description_set) {
-								cgs_webrtc_add_ice_candiate(pcgs_tasklet_info->webrtc_instance,
-									json_string_value(json_object_get(root, "sdpMid")),
-									json_integer_value(json_object_get(root, "sdpMLineIndex")),
-									json_string_value(candidate));
-							}
+					json_t* type = json_object_get(root, "type");					
+					if (type) {
+						const char* typestr = json_string_value(type);
+						if (0 == strcmp(typestr, "offer")) {
+							json_t* sdp = json_object_get(root, "sdp");
+							pcgs_tasklet_info->local_description_set = pcgs_tasklet_info->remote_description_set = false;
+							cgs_webrtc_set_remote_description(pcgs_tasklet_info->webrtc_instance, json_string_value(sdp), true);
+						}
+						else if (0 == strcmp(typestr, "answer")) {
+							json_t* sdp = json_object_get(root, "sdp");
+							pcgs_tasklet_info->local_description_set = pcgs_tasklet_info->remote_description_set = false;
+							cgs_webrtc_set_remote_description(pcgs_tasklet_info->webrtc_instance, json_string_value(sdp), false);
+						}
+						else if (0 == strcmp(typestr, "removetrack")) {
+							cgs_webrtc_on_remove_track(pcgs_tasklet_info->webrtc_instance, json_string_value(json_object_get(root, "trackid")));
+						}
+						else if (0 == strcmp(typestr, "candidate")) {
+							json_t* candidate = json_object_get(root, "candidate");
+							if (!candidate)
+								printf("Wrong incoming message [candidate]\n");
 							else {
-								g_async_queue_push(pcgs_tasklet_info->ice_candidate_queue, json_incref(root));
+								if (pcgs_tasklet_info->local_description_set && pcgs_tasklet_info->remote_description_set) {
+									cgs_webrtc_add_ice_candiate(pcgs_tasklet_info->webrtc_instance,
+										json_string_value(json_object_get(root, "sdpMid")),
+										json_integer_value(json_object_get(root, "sdpMLineIndex")),
+										json_string_value(candidate));
+								}
+								else {
+									g_async_queue_push(pcgs_tasklet_info->ice_candidate_queue, json_incref(root));
+								}
 							}
+						}
+						else {
+							printf("Unknown incoming message [%s]\n", typestr);
 						}
 					}
 					else {
-						json_t* type = json_object_get(root, "type");
-						printf("\n\ncgs_webrtc_set_remote_description()\n\n");
-						cgs_webrtc_set_remote_description(pcgs_tasklet_info->webrtc_instance, json_string_value(sdp), 0 == strcmp(json_string_value(type), "offer"));
+						printf("Unknown incoming message\n");
 					}
 					json_decref(root);
 					break;
@@ -308,14 +326,16 @@ int main()
 				}
 				case CGS_EVENT_WEBRTC_SET_LOCAL_SESSION_DESCRIPTION_FAILED:
 					break;
-				case CGS_EVENT_WEBRTC_CREATE_SESSION_DESCRIPTION_OFFER_DONE:
+				case CGS_EVENT_WEBRTC_CREATE_SESSION_DESCRIPTION_OFFER_DONE: {
 					cgs_websockets_send(pcgs_tasklet_info->websocket_instance, (char*)event->in, strlen((char*)event->in));
 					break;
+				}
 				case CGS_EVENT_WEBRTC_CREATE_SESSION_DESCRIPTION_OFFER_FAILED:
 					break;
-				case CGS_EVENT_WEBRTC_CREATE_SESSION_DESCRIPTION_ANSWER_DONE:
+				case CGS_EVENT_WEBRTC_CREATE_SESSION_DESCRIPTION_ANSWER_DONE: {
 					cgs_websockets_send(pcgs_tasklet_info->websocket_instance, (char*)event->in, strlen((char*)event->in));
 					break;
+				}
 				case CGS_EVENT_WEBRTC_CREATE_SESSION_DESCRIPTION_ANSWER_FAILED:
 					break;
 				case CGS_EVENT_WEBRTC_ICE_CANDIDATE:
