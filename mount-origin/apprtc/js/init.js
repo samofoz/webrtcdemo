@@ -5,7 +5,21 @@ var loadingParams = {
 
     mediaConstraints: { "audio": true, "video": { "optional": [{ "minWidth": "1280" }, { "minHeight": "720" }], "mandatory": {} } },
     offerOptions: {},
-    peerConnectionConfig: { "rtcpMuxPolicy": "require", "bundlePolicy": "max-bundle", "iceServers": [{ "urls": ["stun:stun.l.google.com:19302"] }] },
+        peerConnectionConfig: { 
+
+		                                "rtcpMuxPolicy": "require", 
+
+		                                "bundlePolicy": 
+
+		                                "max-bundle", 
+
+		                                "iceServers": [ 
+
+							                                                {"urls":"stun:stun.l.google.com:19302"},
+
+							                                                {"urls": "turn:13.232.126.19:3478","credential": "test", "username": "test" }]},
+
+
     peerConnectionConstraints: { "optional": [] },
     iceServerRequestUrl: '',
     iceServerTransports: '',

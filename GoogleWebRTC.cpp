@@ -133,7 +133,7 @@ int cgs_webrtc_init(struct cgs_webrtc** pcgs_webrtc, cgs_webrtc_event_callback c
 	(*pcgs_webrtc)->audio_device = (*pcgs_webrtc)->worker_thread->Invoke<rtc::scoped_refptr<webrtc::AudioDeviceModule>>(RTC_FROM_HERE,
 		[]()
 		{
-#if 0
+#if 1
 			return FakeAudioCaptureModule::Create();
 #else
 			return webrtc::AudioDeviceModule::Create(webrtc::AudioDeviceModule::kDummyAudio, webrtc::CreateDefaultTaskQueueFactory().get());
@@ -149,7 +149,7 @@ int cgs_webrtc_init(struct cgs_webrtc** pcgs_webrtc, cgs_webrtc_event_callback c
 											(*pcgs_webrtc)->network_thread.get() /* network_thread */, 
 											(*pcgs_webrtc)->worker_thread.get() /* worker_thread */,
 											(*pcgs_webrtc)->signaling_thread.get() /* signaling_thread */, 
-#ifndef _DEBUG
+#if 0//ndef _DEBUG
 											nullptr,/* default_adm */
 #else
 											(*pcgs_webrtc)->audio_device ,////
