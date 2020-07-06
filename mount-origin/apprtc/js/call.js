@@ -2,7 +2,7 @@ var Call = function (params, onremotestreamremoved) {
     trace("Call()");
     this.params_ = params;
     this.roomServer_ = params.roomServer || "";
-    this.channel_ = new SignalingChannel(params.wssUrl, params.wssPostUrl);
+    this.channel_ = new SignalingChannel(get_appropriate_ws_url(""), get_appropriate_ws_url(""));
     this.channel_.onmessage = this.onRecvSignalingChannelMessage_.bind(this);
     this.onremotestreamremoved = onremotestreamremoved;
     this.pcClient_ = null;
@@ -199,19 +199,18 @@ function _startScreenCapture() {
         return navigator.mediaDevices.getUserMedia({ video: { mediaSource: 'screen' }, audio: true });
     }
 };
-Call.prototype.onScreenStreamInactive_ = function(e) {
+Call.prototype.onScreenStreamInactive_ = function() {
     trace("------------------Call.prototype.onScreenStreamInactive_()");
     if (this.screenStream_) {
         for (let track of this.screenStream_.getTracks()) {
+            trace("------------------Call.prototype.onScreenStreamInactive_()" + String(track.id));
             for (let sender of this.pcClient_.pc_.getSenders()) {
-                if (sender.track && (sender.track.id === track.id)) {
-                    this.pcClient_.pc_.removeTrack(sender);
+                if (sender.track.id === track.id) {
                     this.channel_.send(JSON.stringify({ type: "removetrack", streamid: this.screenStream_.id, trackid: track.id}));
-                    break;
+                    this.pcClient_.pc_.removeTrack(sender);
                 }
             }
         }
-        this.screenStream_.getTracks().forEach(track => track.stop());
         this.screenStream_ = null;
     }
 };
@@ -220,12 +219,12 @@ Call.prototype.toggleShareScreen = async function (shareScreenIconSet) {
     if (!this.screenStream_) {
         this.screenStream_ = await _startScreenCapture();
         if (this.screenStream_) {
-            console.log(this.screenStream_.getTracks().length);
-            this.screenStream_.oninactive = Call.prototype.onScreenStreamInactive_.bind(this);
+            this.screenStream_.getTracks().forEach(track => console.log('track: ' + track.id));
             this.pcClient_.addStream(this.screenStream_);
         }
     } else {
-        this.screenStream_.getTracks().forEach(track => track.stop());
+        //this.screenStream_.getTracks().forEach(track => track.stop());
+        this.onScreenStreamInactive_();
     }
     shareScreenIconSet.toggle();
 };

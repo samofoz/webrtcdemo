@@ -45,11 +45,15 @@ PeerConnectionClient.prototype.addStream = function (stream) {
         }
     }
 */
-    this.pc_.addStream(stream);
+    stream.getTracks().forEach(track => this.pc_.addTrack(track, stream));
+    //this.pc_.addStream(stream);
 };
 
 PeerConnectionClient.prototype.onNegotiationNeeded_ = function () {
-    this.pc_.createOffer().then(this.setLocalSdpAndNotify_.bind(this)).catch(this.onError_.bind(this, "createOffer"));
+    trace("PeerConnectionClient.prototype.onNegotiationNeeded_()");
+    if (this.pc_.signalingState !== "stable" || this.pc_.remoteDescription !== null || this.pc_.localDescription !== null) {
+        this.pc_.createOffer().then(this.setLocalSdpAndNotify_.bind(this)).catch(this.onError_.bind(this, "onNegotiationNeeded_::createOffer"));
+    }
 };
 
 PeerConnectionClient.prototype.startAsCaller = function (offerOptions) {
@@ -108,7 +112,7 @@ PeerConnectionClient.prototype.receiveSignalingMessage = function (message) {
             } else {
                 if (messageObj.type === "removetrack") {
                     if (this.onremovetrack) {
-                        this.onremovetrack(messageObj.streamid);
+                        //this.onremovetrack(messageObj.streamid);
                     }
                 }
             }
@@ -171,9 +175,8 @@ PeerConnectionClient.prototype.setRemoteSdp_ = function (message) {
 PeerConnectionClient.prototype.onSetRemoteDescriptionSuccess_ = function () {
     trace("PeerConnectionClient.prototype.onSetRemoteDescriptionSuccess_()");
     trace("Set remote session description success.");
-    var remoteStreams = this.pc_.getRemoteStreams();
     if (this.onremotesdpset) {
-        this.onremotesdpset(remoteStreams.length > 0 && remoteStreams[0].getVideoTracks().length > 0);
+        this.onremotesdpset(true);
     }
 };
 PeerConnectionClient.prototype.processSignalingMessage_ = function (message) {
@@ -269,10 +272,14 @@ PeerConnectionClient.prototype.recordIceCandidate_ = function (location, candida
 };
 PeerConnectionClient.prototype.onRemoteStreamAdded_ = function (event) {
     trace("PeerConnectionClient.prototype.onRemoteStreamAdded_()");
+    event.streams[0].onremovetrack = this.onRemoveTrack_.bind(this, event.streams[0].id);
     if (this.onremotestreamadded) {
         this.onremotestreamadded(event.streams[0]);
     }
 };
+PeerConnectionClient.prototype.onRemoveTrack_ = function(id) {
+    this.onremovetrack(id);
+}
 PeerConnectionClient.prototype.onError_ = function (tag, error) {
     trace("PeerConnectionClient.prototype.onError_()");
     if (this.onerror) {

@@ -314,6 +314,7 @@ public:
 		pcgs_webrtc_->callback(pcgs_webrtc_, pcgs_webrtc_instance_, &event, pcgs_webrtc_instance_->user_context);
 	}
 	virtual void OnIceCandidateError(const std::string& host_candidate,const std::string& url,int error_code,const std::string& error_text) {
+		std::cout << "OnIceCandidateError: " << host_candidate << "," << url << "," << error_code<< "," << error_text;
 		cgs_webrtc_event event;
 		event.code = CGS_WEBRTC_EVENT_ICE_CANDIDATE_ERROR;
 		event.in = NULL;
@@ -338,37 +339,10 @@ public:
 		pcgs_webrtc_->callback(pcgs_webrtc_, pcgs_webrtc_instance_, &event, pcgs_webrtc_instance_->user_context);
 	}
 	virtual void OnTrack(rtc::scoped_refptr<webrtc::RtpTransceiverInterface> transceiver) {
-		std::ostringstream local_stream_id, remote_stream_id;		
-		if (pcgs_webrtc_instance_->tracks.size() < 2) {
-			local_stream_id << "loopback" << "-" << pcgs_webrtc_instance_;
-			remote_stream_id << "stream" << "-" << pcgs_webrtc_instance_;
-		}
-		else {
-			local_stream_id << "screenshare" << "-" << pcgs_webrtc_instance_;
-			remote_stream_id << "screenshare" << "-" << pcgs_webrtc_instance_;
-		}
-		pcgs_webrtc_instance_->peer_connection->AddTrack(transceiver->receiver()->track(), { local_stream_id.str() });
-		if (transceiver->receiver()->track()->kind() == webrtc::MediaStreamTrackInterface::kAudioKind) {
-			cgs_webrtc_track_list_entry* entry = new cgs_webrtc_track_list_entry;
-			entry->psink_audio = new cgs_webrtc_audio_track_sink(pcgs_webrtc_, pcgs_webrtc_instance_);
-			entry->stream_id = remote_stream_id.str();
-			pcgs_webrtc_instance_->tracks.push_back(std::make_pair(transceiver->receiver()->track(), entry));
-			((webrtc::AudioTrackInterface*)transceiver->receiver()->track().get())->AddSink(entry->psink_audio);
-		}
-		else {
-			cgs_webrtc_track_list_entry* entry = new cgs_webrtc_track_list_entry;
-			entry->psink_video = new cgs_webrtc_video_track_sink(pcgs_webrtc_, pcgs_webrtc_instance_);
-			entry->stream_id = remote_stream_id.str();
-			pcgs_webrtc_instance_->tracks.push_back(std::make_pair(transceiver->receiver()->track(), entry));
-			((webrtc::VideoTrackInterface*)transceiver->receiver()->track().get())->AddOrUpdateSink(entry->psink_video, rtc::VideoSinkWants());
-		}
 		cgs_webrtc_event event;
 		event.code = CGS_WEBRTC_EVENT_TRACK;
-		event.in = NULL;
+		event.in = (void*)g_strdup(transceiver->receiver()->track()->id().c_str());
 		pcgs_webrtc_->callback(pcgs_webrtc_, pcgs_webrtc_instance_, &event, pcgs_webrtc_instance_->user_context);
-	}
-	virtual void OnRemoveTrack(rtc::scoped_refptr<webrtc::RtpReceiverInterface> receiver) {
-		cgs_webrtc_on_remove_track(pcgs_webrtc_instance_, receiver->track()->id().c_str());
 	}
 };
 
@@ -389,9 +363,9 @@ int cgs_webrtc_create_instance(struct cgs_webrtc* pcgs_webrtc, struct cgs_webrtc
 		config.enable_dtls_srtp = true;
 		server.uri = "stun:stun.l.google.com:19302";
 		config.servers.push_back(server);
-		server2.uri = "turn:numb.viagenie.ca";
-		server2.username = "muazkh";
-		server2.password = "webrtc@live.com";
+		server2.uri = "turn:13.232.126.19:3478";
+		server2.username = "test";
+		server2.password = "test";
 		config.servers.push_back(server2);
 
 		(*pcgs_webrtc_instance)->pcgs_webrtc = pcgs_webrtc;
@@ -617,6 +591,41 @@ static int webrtc_remove_track_from_conference(struct cgs_webrtc_instance* pcgs_
 	return CGS_WEBRTC_ERROR_SUCCESS;
 }
 
+int cgs_webrtc_on_add_track(struct cgs_webrtc_instance* pcgs_webrtc_instance, const char* trackid) {
+	for (auto const& receiver : pcgs_webrtc_instance->peer_connection->GetReceivers()) {
+		if (receiver->track() && receiver->track()->id().compare(trackid) == 0) {
+			/* Add this track to the list */
+			std::ostringstream local_stream_id, remote_stream_id;
+			if (pcgs_webrtc_instance->tracks.size() < 2) {
+				local_stream_id << "loopback" << "-" << pcgs_webrtc_instance;
+				remote_stream_id << "stream" << "-" << pcgs_webrtc_instance;
+			}
+			else {
+				local_stream_id << "screenshare" << "-" << pcgs_webrtc_instance;
+				remote_stream_id << "screenshare" << "-" << pcgs_webrtc_instance;
+			}
+			if (receiver->track()->kind() == webrtc::MediaStreamTrackInterface::kAudioKind) {
+				cgs_webrtc_track_list_entry* entry = new cgs_webrtc_track_list_entry;
+				entry->psink_audio = new cgs_webrtc_audio_track_sink(pcgs_webrtc_instance->pcgs_webrtc, pcgs_webrtc_instance);
+				entry->stream_id = remote_stream_id.str();
+				pcgs_webrtc_instance->tracks.push_back(std::make_pair(receiver->track(), entry));
+				((webrtc::AudioTrackInterface*)receiver->track().get())->AddSink(entry->psink_audio);
+			}
+			else {
+				pcgs_webrtc_instance->peer_connection->AddTrack(receiver->track(), { local_stream_id.str() });
+				cgs_webrtc_track_list_entry* entry = new cgs_webrtc_track_list_entry;
+				entry->psink_video = new cgs_webrtc_video_track_sink(pcgs_webrtc_instance->pcgs_webrtc, pcgs_webrtc_instance);
+				entry->stream_id = remote_stream_id.str();
+				pcgs_webrtc_instance->tracks.push_back(std::make_pair(receiver->track(), entry));
+				((webrtc::VideoTrackInterface*)receiver->track().get())->AddOrUpdateSink(entry->psink_video, rtc::VideoSinkWants());
+			}
+			break;
+		}
+	}
+
+	return CGS_WEBRTC_ERROR_SUCCESS;
+}
+
 int cgs_webrtc_on_remove_track(struct cgs_webrtc_instance* pcgs_webrtc_instance, const char *trackid) {
 	/* Remove the track from whom it belongs*/
 	for (auto const& track : pcgs_webrtc_instance->tracks) {
@@ -625,7 +634,7 @@ int cgs_webrtc_on_remove_track(struct cgs_webrtc_instance* pcgs_webrtc_instance,
 			webrtc_remove_track_from_conference(pcgs_webrtc_instance, track.first, track.second->stream_id.c_str());
 
 
-			/* Fire a remove track event*/
+			/* Fire a remove track event, to be sent to the other side */
 			cgs_webrtc_event event;
 			event.code = CGS_WEBRTC_EVENT_REMOVE_TRACK;
 			event.in = (void*)g_strdup(track.second->stream_id.c_str());
@@ -662,7 +671,7 @@ int cgs_webrtc_remove_from_conference(struct cgs_webrtc_instance* pcgs_webrtc_in
 					if (this_sender->track() && track.first->id() == this_sender->track()->id()) {
 						pcgs_webrtc_instance->peer_connection->RemoveTrack(this_sender);
 
-						/* Fire a remove track event*/
+						/* Fire a remove track event, to be sent to the other side */
 						cgs_webrtc_event event;
 						event.code = CGS_WEBRTC_EVENT_REMOVE_TRACK;
 						event.in = (void*)g_strdup(track.second->stream_id.c_str());

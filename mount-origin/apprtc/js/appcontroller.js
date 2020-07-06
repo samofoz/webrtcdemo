@@ -1,14 +1,15 @@
 var UI_CONSTANTS = {
-    confirmJoinButton: "#confirm-join-button", confirmJoinDiv: "#confirm-join-div", confirmJoinRoomSpan: "#confirm-join-room-span", fullscreenSvg: "#fullscreen", hangupSvg: "#hangup", icons: "#icons", infoDiv: "#info-div", videosDiv: "#videos", muteAudioSvg: "#mute-audio", muteVideoSvg: "#mute-video", shareScreenSvg: "#share-screen", newRoomButton: "#new-room-button", newRoomLink: "#new-room-link", privacyLinks: "#privacy", rejoinButton: "#rejoin-button", rejoinDiv: "#rejoin-div",
+    confirmJoinButton: "#confirm-join-button", confirmJoinDiv: "#confirm-join-div", confirmJoinRoomSpan: "#confirm-join-room-span", fullscreenSvg: "#fullscreen", hangupSvg: "#hangup", icons: "#icons", infoDiv: "#info-div", videosDiv: "#videos", muteAudioSvg: "#mute-audio", muteVideoSvg: "#mute-video", shareScreenSvg: "#share-screen", newRoomButton: "#new-room-button", newRoomLink: "#new-room-link", rejoinButton: "#rejoin-button", rejoinDiv: "#rejoin-div",
     rejoinLink: "#rejoin-link", roomLinkHref: "#room-link-href", roomSelectionDiv: "#room-selection", roomSelectionInput: "#room-id-input", roomSelectionInputLabel: "#room-id-input-label", roomSelectionJoinButton: "#join-button", roomSelectionRandomButton: "#random-button", roomSelectionRecentList: "#recent-rooms-list", sharingDiv: "#sharing-div", statusDiv: "#status-div", videosDiv: "#videos"
 };
-var remoteVideos = new Map();
-var remoteVideosDiv = $(UI_CONSTANTS.videosDiv);
+
 
 var AppController = function (loadingParams) {
     trace("AppController()");
     trace("Initializing; server= " + loadingParams.roomServer + ".");
     trace("Initializing; room=" + loadingParams.roomId + ".");
+    this.remoteVideos = new Map();
+    this.remoteVideosDiv = $(UI_CONSTANTS.videosDiv);
     this.sharedView_ = true;
     this.hangupSvg_ = $(UI_CONSTANTS.hangupSvg);
     this.icons_ = $(UI_CONSTANTS.icons);
@@ -68,8 +69,6 @@ var AppController = function (loadingParams) {
 };
 AppController.prototype.createCall_ = function () {
     trace("AppController.prototype.createCall_()");
-    var privacyLinks = $(UI_CONSTANTS.privacyLinks);
-    this.hide_(privacyLinks);
     this.call_ = new Call(this.loadingParams_);
     this.call_.onremotehangup = this.onRemoteHangup_.bind(this);
     this.call_.onremotesdpset = this.onRemoteSdpSet_.bind(this);
@@ -101,7 +100,6 @@ AppController.prototype.showRoomSelection_ = function () {
     this.hide_(roomSelectionDiv);
     this.createCall_();
     this.finishCallSetup_("000000001");
-    this.roomSelection_.removeEventListeners();
     this.roomSelection_ = null;
 };
 AppController.prototype.setupUi_ = function () {
@@ -164,7 +162,7 @@ AppController.prototype.onRemoteSdpSet_ = function (hasRemoteVideo) {
 };
 AppController.prototype.waitForRemoteVideo_ = function () {
     trace("AppController.prototype.waitForRemoteVideo_()");
-    for (let remoteVideo of remoteVideos.values()) {
+    for (let remoteVideo of this.remoteVideos.values()) {
         if (remoteVideo.readyState >= 2) {
             trace("Remote video started; currentTime: " + remoteVideo.currentTime);
             this.transitionToActive_(remoteVideo);
@@ -216,7 +214,7 @@ AppController.prototype.onResize_ = function () {
     }
     */
     if (this.sharedView_ === false) {
-        remoteVideos.forEach(function (value, key, map) {
+        this.remoteVideos.forEach(function (value, key, map) {
             if (this.sharedViewStream_ === value) {
                 value.style.height = '100%';
                 value.style.width = '100%';
@@ -233,24 +231,35 @@ AppController.prototype.onResize_ = function () {
             }
         }.bind(this));
     } else {
-        remoteVideos.forEach(function (value, key, map) {
+        this.remoteVideos.forEach(function (value, key, map) {
             if (key.id.includes("screenshare")) {
                 this.sharedViewStream_ = value;
                 ++screensharepresent;
             }
-            value.style.height = '100%';
-            value.style.width = 100 / remoteVideos.size + '%';
-            value.style.maxheight = '100%';
-            value.style.maxwidth = 100 / remoteVideos.size + '%';
-            value.style.left = Math.floor(parseFloat(i * (window.innerWidth / remoteVideos.size))) + 'px';
-            value.style.top = '0px';
-            value.style.border = '10px';
-            value.style.zindex = 100;
+            if (window.innerWidth > window.innerHeight) {
+                value.style.height = '100%';
+                value.style.width = 100 / this.remoteVideos.size + '%';
+                value.style.maxheight = '100%';
+                value.style.maxwidth = 100 / this.remoteVideos.size + '%';
+                value.style.left = Math.floor(parseFloat(i * (window.innerWidth / this.remoteVideos.size))) + 'px';
+                value.style.top = '0px';
+                value.style.border = '10px';
+                value.style.zindex = 100;
+            } else {
+                value.style.width = '100%';
+                value.style.height = 100 / this.remoteVideos.size + '%';
+                value.style.maxwidth = '100%';
+                value.style.maxheight = 100 / this.remoteVideos.size + '%';
+                value.style.top = Math.floor(parseFloat(i * (window.innerHeight / this.remoteVideos.size))) + 'px';
+                value.style.left = '0px';
+                value.style.border = '10px';
+            }
             ++i;
             this.transitionToActive_(value);
+
         }.bind(this));
     }
-    if (screensharepresent === 0 && remoteVideos.size === 1) {
+    if (screensharepresent === 0 && this.remoteVideos.size === 1) {
         this.displaySharingInfo_();
     } else {
         this.deactivate_(this.sharingDiv_);
@@ -267,7 +276,7 @@ AppController.prototype.dblClickStream_ = function (stream) {
 
 AppController.prototype.addStream_ = function (stream) {
     trace("AppController.prototype.addStream_()");
-    if (remoteVideos.has(stream) === true) {
+    if (this.remoteVideos.has(stream) === true) {
         return false;
     }
 
@@ -284,7 +293,7 @@ AppController.prototype.addStream_ = function (stream) {
             obj.muted = false;
         }
         divto.appendChild(obj);
-        remoteVideos.set(stream, obj);
+        this.remoteVideos.set(stream, obj);
         obj.srcObject = stream;
         obj.ondblclick = this.dblClickStream_.bind(this, obj);
 
@@ -298,10 +307,10 @@ AppController.prototype.addStream_ = function (stream) {
 AppController.prototype.removeStream_ = function (stream) {
     trace("AppController.prototype.removeStream_()");
     var divto = document.getElementById("videos");
-    var obj = remoteVideos.get(stream);
+    var obj = this.remoteVideos.get(stream);
     if (obj !== null) {
         divto.removeChild(obj);
-        remoteVideos.delete(stream);
+        this.remoteVideos.delete(stream);
 
         /* Recalculate video positions */
         this.onResize_.call(this);
@@ -324,7 +333,7 @@ AppController.prototype.onRemoteStreamAdded_ = function (stream) {
 AppController.prototype.onRemoteStreamRemoved_ = function (streamid) {
     trace("AppController.prototype.onRemoteStreamRemoved_()");
     trace("Remote stream removed:" + streamid);
-    for (let stream of remoteVideos.keys()) {
+    for (let stream of this.remoteVideos.keys()) {
         if (stream.id === streamid) {
             this.removeStream_(stream);
             return;
@@ -334,16 +343,16 @@ AppController.prototype.onRemoteStreamRemoved_ = function (streamid) {
 AppController.prototype.transitionToActive_ = function (video) {
     trace("AppController.prototype.transitionToActive_()" + video);
 
-    if (video === null) {
+    if (video !== undefined) {
+        video.oncanplay = undefined;
+        this.activate_(video);
+    } else {
         var connectTime = window.performance.now();
         trace("Call setup time: " + (connectTime - this.call_.startTime).toFixed(0) + "ms.");
-        for (let remoteVideo of remoteVideos.values()) {
+        for (let remoteVideo of this.remoteVideos.values()) {
             remoteVideo.oncanplay = undefined;
             this.activate_(remoteVideo);
         }
-    } else {
-        video.oncanplay = undefined;
-        this.activate_(video);
     }
     this.activate_(this.videosDiv_);
     this.show_(this.icons_);
@@ -358,19 +367,19 @@ AppController.prototype.transitionToWaiting_ = function () {
         this.remoteVideoResetTimer_ = setTimeout(function () {
             this.remoteVideoResetTimer_ = null;
             trace("Resetting remoteVideo src after transitioning to waiting.");
-            for (let remoteVideo of remoteVideos.values()) {
+            for (let remoteVideo of this.remoteVideos.values()) {
                 remoteVideo.srcObject = null;
             }
         }.bind(this), 800);
     }
-    remoteVideos.forEach(function (value2, value, set) {
+    this.remoteVideos.forEach(function (value2, value, set) {
         value2.oncanplay = undefined;
         this.deactivate_(value2);
     }, this);
 };
 AppController.prototype.transitionToDone_ = function () {
     trace("AppController.prototype.transitionToDone_()");
-    for (let remoteVideo of remoteVideos.values()) {
+    for (let remoteVideo of this.remoteVideos.values()) {
         remoteVideo.oncanplay = undefined;
         this.deactivate_(remoteVideo);
     }
@@ -378,7 +387,7 @@ AppController.prototype.transitionToDone_ = function () {
     this.activate_(this.rejoinDiv_);
     this.show_(this.rejoinDiv_);
     this.videosDiv_.innerHTML = '';
-    remoteVideos.clear();
+    this.remoteVideos.clear();
     this.displayStatus_("");
 };
 AppController.prototype.onRejoinClick_ = function () {
@@ -433,7 +442,7 @@ AppController.prototype.pushCallNavigation_ = function (roomId, roomLink) {
 };
 AppController.prototype.displaySharingInfo_ = function (roomId, roomLink) {
     trace("AppController.prototype.displaySharingInfo_()");
-    this.roomLinkHref_.href = "https://localhost:80";
+    this.roomLinkHref_.href = document.URL;
     this.roomLinkHref_.text = "Open Another Window";
     this.roomLink_ = roomLink;
     //this.pushCallNavigation_(roomId, roomLink);

@@ -222,7 +222,7 @@ int main()
 				printf("\n\n[%s] Got event %s\n\n", event->context, cgs_get_event_str(event->event));
 				switch (event->event) {
 				case CGS_EVENT_WEBSOCKET_CONNECTED: {
-					//cgs_websockets_send(pcgs_tasklet_info->websocket_instance, (char *)malloc(16500), 16500);
+					//cgs_websockets_send(pcgs_tasklet_info->websocket_instance, (char *)calloc(4096,1), 4096);
 					cgs_webrtc_create_instance(g_task_info.pcgs_webrtc, &pcgs_tasklet_info->webrtc_instance, event->context);
 					pcgs_tasklet_info->remote_description_set = false;
 					pcgs_tasklet_info->local_description_set = false;
@@ -346,6 +346,12 @@ int main()
 						cgs_websockets_send(pcgs_tasklet_info->websocket_instance, (char*)event->in, strlen((char*)event->in));
 					}
 					break;
+				case CGS_EVENT_WEBRTC_TRACK:
+					if (event->in) {
+						cgs_webrtc_on_add_track(pcgs_tasklet_info->webrtc_instance, (char*)event->in);
+						g_free(event->in);
+					}
+					break;
 				case CGS_EVENT_WEBRTC_REMOVE_TRACK:
 					if (event->in) {
 						json_t* json_candidate = json_pack("{ssss}", "type", "removetrack", "streamid", (char*)event->in);
@@ -353,8 +359,8 @@ int main()
 						cgs_websockets_send(pcgs_tasklet_info->websocket_instance, json, strlen(json));
 						json_decref(json_candidate);
 						g_free(event->in);
-						break;
 					}
+					break;
 				default:
 					break;
 				}
@@ -531,6 +537,7 @@ int cgs_webrtc_callback(cgs_webrtc* pcgs_webrtc, cgs_webrtc_instance* pcgs_webrt
 		event->event = CGS_EVENT_WEBRTC_ICE_SELECTED_CANDIDATE_PAIR_CHANGED;
 		break;
 	case CGS_WEBRTC_EVENT_TRACK:
+		event->in = pevent->in;
 		event->event = CGS_EVENT_WEBRTC_TRACK;
 		break;
 	case CGS_WEBRTC_EVENT_REMOVE_TRACK:

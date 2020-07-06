@@ -15,10 +15,10 @@ var loadingParams = {
 
 		                                "iceServers": [ 
 
-							                                                {"urls":"stun:stun.l.google.com:19302"},
-
-							                                                {"urls": "turn:13.232.126.19:3478","credential": "test", "username": "test" }]},
-
+                                            { "urls":"stun:stun.l.google.com:19302"},
+                                            { "urls": "turn:13.232.126.19:3478", "credential": "test", "username": "test" },
+                                        ]
+        },
 
     peerConnectionConstraints: { "optional": [] },
     iceServerRequestUrl: '',

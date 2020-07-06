@@ -18,7 +18,7 @@ SignalingChannel.prototype.open = function () {
     }
     trace("Opening signaling channel.");
     return new Promise(function (resolve, reject) {
-        this.websocket_ = new WebSocket("wss://demo1.carriergrade.in", "lws-minimal");
+        this.websocket_ = new WebSocket(this.wssUrl_, "lws-minimal");
         this.websocket_.onopen = function () {
             trace("SignalingChannel.websocket_.onopen()");
             trace("Signaling channel opened.");

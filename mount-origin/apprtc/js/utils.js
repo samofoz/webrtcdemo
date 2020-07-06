@@ -1,3 +1,28 @@
+function get_appropriate_ws_url(extra_url) {
+    var pcol;
+    var u = document.URL;
+
+	/*
+	 * We open the websocket encrypted if this page came on an
+	 * https:// url itself, otherwise unencrypted
+	 */
+
+    if (u.substring(0, 5) === "https") {
+        pcol = "wss://";
+        u = u.substr(8);
+    } else {
+        pcol = "ws://";
+        if (u.substring(0, 4) === "http")
+            u = u.substr(7);
+    }
+
+    u = u.split("/");
+
+    /* + "/xxx" bit is for IE10 workaround */
+
+    return pcol + u[0] + "/" + extra_url;
+}
+
 function mergeConstraints(cons1, cons2) {
     if (!cons1 || !cons2) {
         return cons1 || cons2;

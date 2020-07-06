@@ -73,11 +73,15 @@ int cgs_websockets_init(struct cgs_websockets** pcgs_websockets, cgs_websockets_
 	info.port = 443;
 	info.mounts = &mount;
 	info.protocols = protocols;
-	//info.iface = "localhost";
 	info.options = LWS_SERVER_OPTION_DISABLE_IPV6 | LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
+#if 0
 	info.ssl_cert_filepath = "demo.cert";
 	info.ssl_private_key_filepath = "demo.key";
-
+	info.ssl_ca_filepath = "demo.ca-bundle";
+#else
+	info.ssl_cert_filepath = "certs/localhost.cert";
+	info.ssl_private_key_filepath = "certs/localhost.key";
+#endif
 	(*pcgs_websockets)->plws_context = lws_create_context(&info);
 	if (!(*pcgs_websockets)->plws_context) {
 		ret = CGS_WEBSOCKETS_ERROR_LWS;
@@ -128,10 +132,53 @@ gpointer cgs_websockets_lws_service_thread(gpointer context)
 	return NULL;
 }
 
+#if 1
 int cgs_websockets_send(struct cgs_websockets_instance* pcgs_websockets_instance, const char* out, size_t len)
 {
 	int ret;
 	struct cgs_websockets_buffer *buf;
+
+	size_t chunk = 1;
+	size_t start = 0;
+	size_t length = 2048;
+
+	do {
+		if ((length * chunk) > len) {
+			length = len % 2048;
+		}
+
+		buf = (struct cgs_websockets_buffer*)malloc(sizeof(struct cgs_websockets_buffer));
+		if (buf == NULL) {
+			ret = CGS_WEBSOCKETS_ERROR_NOMEM;
+			goto GET_OUT;
+		}
+
+		buf->len = length + LWS_PRE;
+		buf->buf = (char*)malloc(buf->len);
+		if (buf->buf == NULL) {
+			free(buf);
+			ret = CGS_WEBSOCKETS_ERROR_NOMEM;
+			goto GET_OUT;
+		}
+		memcpy(buf->buf + LWS_PRE, out + start, length);
+		buf->flag = lws_write_ws_flags(LWS_WRITE_TEXT, (start == 0), (start + length) == len);
+		g_async_queue_push(pcgs_websockets_instance->lws_send_queue, buf);
+		start += length;
+		++chunk;
+	} while (start < len);
+
+	g_async_queue_push(pcgs_websockets_instance->pcgs_websockets->lws_writable_instances_queue, pcgs_websockets_instance);
+	lws_cancel_service(pcgs_websockets_instance->pcgs_websockets->plws_context);
+	ret = CGS_WEBSOCKETS_ERROR_SUCCESS;
+
+GET_OUT:
+	return ret;
+}
+#else
+int cgs_websockets_send(struct cgs_websockets_instance* pcgs_websockets_instance, const char* out, size_t len)
+{
+	int ret;
+	struct cgs_websockets_buffer* buf;
 
 	buf = (struct cgs_websockets_buffer*)malloc(sizeof(struct cgs_websockets_buffer));
 	if (buf == NULL) {
@@ -147,17 +194,15 @@ int cgs_websockets_send(struct cgs_websockets_instance* pcgs_websockets_instance
 		goto GET_OUT;
 	}
 	memcpy(buf->buf + LWS_PRE, out, len);
-
 	g_async_queue_push(pcgs_websockets_instance->lws_send_queue, buf);
 	g_async_queue_push(pcgs_websockets_instance->pcgs_websockets->lws_writable_instances_queue, pcgs_websockets_instance);
 	lws_cancel_service(pcgs_websockets_instance->pcgs_websockets->plws_context);
-
 	ret = CGS_WEBSOCKETS_ERROR_SUCCESS;
 
 GET_OUT:
 	return ret;
 }
-
+#endif
 
 int cgs_websockets_set_user_context(struct cgs_websockets_instance* pcgs_websockets_instance, void* user_context) {
 	pcgs_websockets_instance->user_context = user_context;
@@ -275,7 +320,7 @@ int cgs_websockets_lws_callback(struct lws* wsi, enum lws_callback_reasons reaso
 		pwebsockets_instance = *ppwebsockets_instance;
 		if (g_async_queue_length(pwebsockets_instance->lws_send_queue)) {
 			struct cgs_websockets_buffer* buf = (struct cgs_websockets_buffer*)g_async_queue_pop(pwebsockets_instance->lws_send_queue);
-			if (lws_write(wsi, LWS_PRE + (unsigned char*)buf->buf, buf->len - LWS_PRE, LWS_WRITE_TEXT) >= 0) {
+			if (lws_write(wsi, LWS_PRE + (unsigned char*)buf->buf, buf->len - LWS_PRE, buf->flag) >= 0) {
 				event.code = CGS_WEBSOCKET_EVENT_SENT;
 				event.in = buf;
 			}

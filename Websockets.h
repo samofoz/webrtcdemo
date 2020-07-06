@@ -12,6 +12,7 @@ struct cgs_websockets_instance;
 struct cgs_websockets_buffer {
 	char* buf;
 	size_t len;
+	int flag;
 };
 
 enum cgs_websocket_event_code {

@@ -67,6 +67,7 @@ int cgs_webrtc_add_to_conference(struct cgs_webrtc_instance* pcgs_webrtc_instanc
 int cgs_webrtc_remove_from_conference(struct cgs_webrtc_instance* pcgs_webrtc_instance, struct cgs_webrtc_conference* pcgs_webrtc_conference);
 int cgs_webrtc_destroy_conference(struct cgs_webrtc_conference* pcgs_webrtc_conference);
 
+int cgs_webrtc_on_add_track(struct cgs_webrtc_instance* pcgs_webrtc_instance, const char* trackid);
 int cgs_webrtc_on_remove_track(struct cgs_webrtc_instance* pcgs_webrtc_instance, const char* trackid);
 
 int cgs_webrtc_deinit(struct cgs_webrtc* pcgs_webrtc);
