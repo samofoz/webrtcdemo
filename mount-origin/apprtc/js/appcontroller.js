@@ -107,6 +107,7 @@ AppController.prototype.setupUi_ = function () {
     this.iconEventSetup_();
     document.onkeypress = this.onKeyPress_.bind(this);
     window.onmousemove = this.showIcons_.bind(this);
+    window.ontouchstart = this.showIcons_.bind(this);
     $(UI_CONSTANTS.muteAudioSvg).onclick = this.toggleAudioMute_.bind(this);
     $(UI_CONSTANTS.muteVideoSvg).onclick = this.toggleVideoMute_.bind(this);
     $(UI_CONSTANTS.shareScreenSvg).onclick = this.toggleShareScreen_.bind(this);
