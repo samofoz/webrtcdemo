@@ -34,6 +34,8 @@ int cgs_websockets_init(struct cgs_websockets** pcgs_websockets, cgs_websockets_
 {
 	int ret;
 
+	lws_set_log_level(4095, log_emit_function);
+
 	*pcgs_websockets = (struct cgs_websockets*)calloc(1, sizeof(struct cgs_websockets));
 	if (*pcgs_websockets == NULL) {
 		ret = CGS_WEBSOCKETS_ERROR_NOMEM;
@@ -74,13 +76,13 @@ int cgs_websockets_init(struct cgs_websockets** pcgs_websockets, cgs_websockets_
 	info.mounts = &mount;
 	info.protocols = protocols;
 	info.options = LWS_SERVER_OPTION_DISABLE_IPV6 | LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
-#if 0
-	info.ssl_cert_filepath = "demo.cert";
+#if 1
+	info.ssl_cert_filepath = "demo.crt";
 	info.ssl_private_key_filepath = "demo.key";
 	info.ssl_ca_filepath = "demo.ca-bundle";
 #else
-	info.ssl_cert_filepath = "certs/localhost.cert";
-	info.ssl_private_key_filepath = "certs/localhost.key";
+	info.ssl_cert_filepath = "certs/san.cert";
+	info.ssl_private_key_filepath = "certs/san.key";
 #endif
 	(*pcgs_websockets)->plws_context = lws_create_context(&info);
 	if (!(*pcgs_websockets)->plws_context) {
@@ -101,8 +103,6 @@ int cgs_websockets_init(struct cgs_websockets** pcgs_websockets, cgs_websockets_
 		ret = CGS_WEBSOCKETS_ERROR_THREAD_CREATE;
 		goto GET_OUT;
 	}
-
-	lws_set_log_level(4095, log_emit_function);
 
 	(*pcgs_websockets)->callback = callback;
 	ret = CGS_WEBSOCKETS_ERROR_SUCCESS;

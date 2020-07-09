@@ -121,7 +121,7 @@ Call.prototype.hangup = function (async) {
         try {
             executor();
         } catch (ex) {
-            trace(errorString + " " + ex);
+            alert(errorString + " " + ex);
         }
     };
     for (var j = 0; j < steps.length; ++j) {

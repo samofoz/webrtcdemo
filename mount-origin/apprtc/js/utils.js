@@ -669,7 +669,7 @@ function parseJSON(json) {
     try {
         return JSON.parse(json);
     } catch (e) {
-        trace("Error parsing json: " + json);
+        alert("Error parsing json: " + json);
     }
     return null;
 }
@@ -776,7 +776,7 @@ apprtc.windowPort = apprtc.windowPort || {};
         try {
             port.postMessage(message);
         } catch (ex) {
-            trace("Error sending message via port: " + ex);
+            alert("Error sending message via port: " + ex);
         }
     };
     apprtc.windowPort.addMessageListener = function (listener) {
