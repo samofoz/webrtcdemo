@@ -331,12 +331,16 @@ int main()
 					break;
 				}
 				case CGS_EVENT_WEBRTC_CREATE_SESSION_DESCRIPTION_OFFER_FAILED:
+					printf("\n\n[%s] Event message [%s]\n\n", event->context, (char*)event->in);
+					g_free(event->in);
 					break;
 				case CGS_EVENT_WEBRTC_CREATE_SESSION_DESCRIPTION_ANSWER_DONE: {
 					cgs_websockets_send(pcgs_tasklet_info->websocket_instance, (char*)event->in, strlen((char*)event->in));
 					break;
 				}
 				case CGS_EVENT_WEBRTC_CREATE_SESSION_DESCRIPTION_ANSWER_FAILED:
+					printf("\n\n[%s] Event message [%s]\n\n", event->context, (char *)event->in);
+					g_free(event->in);
 					break;
 				case CGS_EVENT_WEBRTC_ICE_CANDIDATE:
 					cgs_websockets_send(pcgs_tasklet_info->websocket_instance, (char*)event->in, strlen((char*)event->in));
@@ -562,6 +566,7 @@ int cgs_webrtc_callback(cgs_webrtc* pcgs_webrtc, cgs_webrtc_instance* pcgs_webrt
 		break;
 	case CGS_WEBRTC_EVENT_CREATE_SESSION_DESCRIPTION_ANSWER_FAILED:
 		event->event = CGS_EVENT_WEBRTC_CREATE_SESSION_DESCRIPTION_ANSWER_FAILED;
+		event->in = pevent->in;
 		break;
 	case CGS_WEBRTC_EVENT_CREATE_SESSION_DESCRIPTION_OFFER_DONE:
 		event->event = CGS_EVENT_WEBRTC_CREATE_SESSION_DESCRIPTION_OFFER_DONE;
@@ -569,6 +574,7 @@ int cgs_webrtc_callback(cgs_webrtc* pcgs_webrtc, cgs_webrtc_instance* pcgs_webrt
 		break;
 	case CGS_WEBRTC_EVENT_CREATE_SESSION_DESCRIPTION_OFFER_FAILED:
 		event->event = CGS_EVENT_WEBRTC_CREATE_SESSION_DESCRIPTION_OFFER_FAILED;
+		event->in = pevent->in;
 		break;
 	default:
 		break;

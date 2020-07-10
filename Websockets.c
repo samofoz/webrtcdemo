@@ -34,7 +34,7 @@ int cgs_websockets_init(struct cgs_websockets** pcgs_websockets, cgs_websockets_
 {
 	int ret;
 
-	lws_set_log_level(4095, log_emit_function);
+	//lws_set_log_level(4095, log_emit_function);
 
 	*pcgs_websockets = (struct cgs_websockets*)calloc(1, sizeof(struct cgs_websockets));
 	if (*pcgs_websockets == NULL) {

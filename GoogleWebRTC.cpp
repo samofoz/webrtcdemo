@@ -438,7 +438,7 @@ public:
 		cgs_webrtc_event event;
 		event.code = offer_ ? CGS_WEBRTC_EVENT_CREATE_SESSION_DESCRIPTION_OFFER_FAILED : CGS_WEBRTC_EVENT_CREATE_SESSION_DESCRIPTION_ANSWER_FAILED;
 
-		event.in = NULL;
+		event.in = g_strdup(error.message());
 		pcgs_webrtc_->callback(pcgs_webrtc_, pcgs_webrtc_instance_, &event, pcgs_webrtc_instance_->user_context);
 	}
 	static cgs_CreateSessionDescriptionObserver* Create(struct cgs_webrtc_instance* pcgs_webrtc_instance, bool offer) {
