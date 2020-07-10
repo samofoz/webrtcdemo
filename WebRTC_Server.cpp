@@ -245,12 +245,10 @@ int main()
 						const char* typestr = json_string_value(type);
 						if (0 == strcmp(typestr, "offer")) {
 							json_t* sdp = json_object_get(root, "sdp");
-							pcgs_tasklet_info->local_description_set = pcgs_tasklet_info->remote_description_set = false;
 							cgs_webrtc_set_remote_description(pcgs_tasklet_info->webrtc_instance, json_string_value(sdp), true);
 						}
 						else if (0 == strcmp(typestr, "answer")) {
 							json_t* sdp = json_object_get(root, "sdp");
-							pcgs_tasklet_info->local_description_set = pcgs_tasklet_info->remote_description_set = false;
 							cgs_webrtc_set_remote_description(pcgs_tasklet_info->webrtc_instance, json_string_value(sdp), false);
 						}
 						else if (0 == strcmp(typestr, "removetrack")) {
