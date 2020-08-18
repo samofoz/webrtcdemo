@@ -27,6 +27,9 @@
     <ClCompile Include="fake_audio_capture_module.cc">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="media_file_writer.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Websockets.h">
@@ -36,6 +39,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="fake_audio_capture_module.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="media_file_writer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

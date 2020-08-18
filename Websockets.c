@@ -81,8 +81,8 @@ int cgs_websockets_init(struct cgs_websockets** pcgs_websockets, cgs_websockets_
 	info.ssl_private_key_filepath = "demo.key";
 	info.ssl_ca_filepath = "demo.ca-bundle";
 #else
-	info.ssl_cert_filepath = "certs/san.cert";
-	info.ssl_private_key_filepath = "certs/san.key";
+	info.ssl_cert_filepath = "certs/localhost.cert";
+	info.ssl_private_key_filepath = "certs/localhost.key";
 #endif
 	(*pcgs_websockets)->plws_context = lws_create_context(&info);
 	if (!(*pcgs_websockets)->plws_context) {

@@ -18,6 +18,8 @@
 #include <glib/gi18n.h>
 #include <jansson.h>
 
+
+
 #include "Websockets.h"
 #include "GoogleWebRTC.h"
 
@@ -210,7 +212,7 @@ int main()
 	SetConsoleCtrlHandler(CtrlHandler, TRUE);
 #endif
 	printf("Starting...");
-
+	
 	cgs_system_initialise();
 
 	/* Event loop here */
@@ -396,6 +398,7 @@ int cgs_system_initialise(void) {
 	g_task_info.main_context_hash_table = g_hash_table_new(NULL, g_str_equal);
 	if (!g_task_info.main_context_hash_table)
 	{
+		g_async_queue_unref(g_task_info.main_loop_queue);
 		return 1;
 	}
 

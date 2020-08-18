@@ -46,7 +46,8 @@ enum cgs_webrtc_error {
 	CGS_WEBRTC_ERROR_WEBRTC,
 	CGS_WEBRTC_ERROR_BAD_ARG,
 	CGS_WEBRTC_ERROR_THREAD_CREATE,
-	CGS_WEBRTC_ERROR_SDP_PARSE
+	CGS_WEBRTC_ERROR_SDP_PARSE,
+	CGS_WEBRTC_ERROR_FFMPEG
 };
 
 typedef int (*cgs_webrtc_event_callback)(cgs_webrtc* pcgs_webrtc, cgs_webrtc_instance* pcgs_webrtc_instance, cgs_webrtc_event* pevent, void* user_context);
