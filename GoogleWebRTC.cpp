@@ -817,9 +817,12 @@ int cgs_webrtc_remove_from_conference(struct cgs_webrtc_instance* pcgs_webrtc_in
 	return CGS_WEBRTC_ERROR_SUCCESS;
 }
 
-
+int cgs_webrtc_size_conference(struct cgs_webrtc_conference* pcgs_webrtc_conference) {
+	return pcgs_webrtc_conference->pwebrtc_instance_list.size();
+}
 
 int cgs_webrtc_destroy_conference(struct cgs_webrtc_conference* pcgs_webrtc_conference) {
+	file_writer_free(pcgs_webrtc_conference->pmedia_file_writer);
 	pcgs_webrtc_conference->pwebrtc_instance_list.clear();
 	delete pcgs_webrtc_conference;
 	return CGS_WEBRTC_ERROR_SUCCESS;

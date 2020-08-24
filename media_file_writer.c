@@ -18,13 +18,13 @@
 #include <assert.h>
 
 #include "media_file_writer.h"
+#include "audio_mixer.h"
 
 #define AV_CODEC_FLAG_GLOBAL_HEADER (1 << 22)
 #define CODEC_FLAG_GLOBAL_HEADER AV_CODEC_FLAG_GLOBAL_HEADER
 
 #define MAX_RESAMPLERS 5
 #define MAX_SWSCALERS 10
-
 
 #define USE_AUDIO_FILTER 0
 #define USE_VIDEO_FILTER 0
@@ -33,6 +33,9 @@
 #define USE_SWS 1
 
 const int src_audio_format = AV_SAMPLE_FMT_S16;
+const int src_audio_num_channels = 1;
+const int64_t src_sample_rate = 48000;
+
 const int out_pix_format = AV_PIX_FMT_YUV420P;
 const int out_audio_format = AV_SAMPLE_FMT_FLTP;
 const int out_audio_num_channels = 1;
@@ -54,24 +57,13 @@ enum file_writer_event_t {
     FILE_WRITER_EVENT_VIDEO_FRAME
 };
 
-
-struct file_writer_t {
-    GThread* pgthread_rec;
-    int exit;
-    GAsyncQueue* main_loop_queue;
-    GHashTable* main_context_hash_table;
-};
-
-struct file_writer_event_queue_item_t {
-    enum file_writer_event_t event;
-    char* context;
-    void* in;
-};
-
 struct resampler_t {
     int channels;
     enum AVSampleFormat sample_fmt;
     int sample_rate;
+    int out_channels;
+    enum AVSampleFormat out_sample_fmt;
+    int out_sample_rate;
     SwrContext* resample_context;
 };
 
@@ -81,6 +73,44 @@ struct swscaler_t {
     enum AVPixelFormat fmt;
     struct SwsContext* sws_context;
 };
+
+struct file_writer_t {
+    GThread* pgthread_rec;
+    int exit;
+    GAsyncQueue* main_loop_queue;
+    GHashTable* main_context_hash_table;
+
+    /* container codec configuration */
+    AVCodec* video_codec_out;
+    AVCodec* audio_codec_out;
+    AVCodecContext* video_ctx_out;
+    AVCodecContext* audio_ctx_out;
+    AVFormatContext* format_ctx_out;
+    AVStream* video_stream;
+    AVStream* audio_stream;
+    AVAudioFifo* out_fifo;
+    int64_t video_frame_ct;
+    int64_t audio_frame_ct;
+    int out_width;
+    int out_height;
+
+    struct audio_mixer_t* audio_mixer;
+
+    struct resampler_t resamplers[MAX_RESAMPLERS];
+    struct swscaler_t swscalers[MAX_SWSCALERS];
+
+    GPtrArray* fw_instances;
+
+    int64_t next_audio_pts;
+};
+
+struct file_writer_event_queue_item_t {
+    enum file_writer_event_t event;
+    char* context;
+    void* in;
+};
+
+
 
 struct file_writer_instance_t {
     struct file_writer_t* file_writer;
@@ -107,7 +137,8 @@ struct file_writer_instance_t {
     AVFormatContext* format_ctx_out;
     AVStream* video_stream;
     AVStream* audio_stream;
-    AVAudioFifo* fifo;
+    AVAudioFifo* out_fifo;
+    AVAudioFifo* in_fifo;
     int64_t video_frame_ct;
     int64_t audio_frame_ct;
 
@@ -116,26 +147,35 @@ struct file_writer_instance_t {
 
     gint64 first_video_frame_time;
     int64_t next_audio_pts;
+    int64_t next_audio_pts_for_mixer;
 
     GThread* pgthread_rec;
     int exit;
     GAsyncQueue* main_loop_queue;
 };
 
-static int file_writer_open(struct file_writer_instance_t* writer_instance, const char* filename, int out_width, int out_height);
-static int file_writer_close(struct file_writer_instance_t* writer_instance);
+static int file_writer_open(struct file_writer_t* writer_instance, const char* filename, int out_width, int out_height);
+static int file_writer_open_for_instance(struct file_writer_instance_t* writer_instance, const char* filename, int out_width, int out_height);
+static int file_writer_close(struct file_writer_t* writer_instance);
+static int file_writer_close_for_instance(struct file_writer_instance_t* writer_instance);
 static int init_audio_filters(struct file_writer_instance_t* file_writer, const char *filters_descr);
 static int init_video_filters(struct file_writer_instance_t* file_writer, const char *filters_descr, int out_width, int out_height);
-static int init_resampler(struct resampler_t* resampler);
+static int init_resampler(struct resampler_t* resampler, int64_t out_ch_layout, enum AVSampleFormat out_sample_fmt, int out_sample_rate);
 static int init_swscaler(struct file_writer_instance_t* file_writer, struct swscaler_t* swscaler, int in_w, int in_h);
-static int write_audio_frame(struct file_writer_instance_t* file_writer, AVFrame* frame, int* data_present);
-static int write_video_frame(struct file_writer_instance_t* file_writer, AVFrame* frame, int* data_present);
+static int write_audio_frame(struct file_writer_t* file_writer, AVFrame* frame, int* data_present);
+static int write_audio_frame_for_instance(struct file_writer_instance_t* file_writer, AVFrame* frame, int* data_present);
+static int write_video_frame(struct file_writer_t* file_writer, AVFrame* frame, int* data_present);
+static int write_video_frame_for_instance(struct file_writer_instance_t* file_writer, AVFrame* frame, int* data_present);
+
 static gpointer cgs_file_writer_recording_thread(gpointer context);
 static gpointer cgs_file_writer_individual_recording_thread(gpointer context);
+
 static void main_loop_queue_item_free(gpointer data);
 static char* get_next_crn();
-int process_audio_frame(struct file_writer_instance_t* file_writer, AVFrame* frame);
-int process_video_frame(struct file_writer_instance_t* file_writer, AVFrame* frame);
+static int process_audio_frame(struct file_writer_t* file_writer, struct file_writer_instance_t* file_writer_instance, AVFrame* frame);
+static int process_audio_frame_for_instance(struct file_writer_instance_t* file_writer, AVFrame* frame);
+static int process_video_frame(struct file_writer_t* file_writer, struct file_writer_instance_t* file_writer_instance, AVFrame* frame);
+static int process_video_frame_for_instance(struct file_writer_instance_t* file_writer, AVFrame* frame);
 
 
 int file_writer_alloc(struct file_writer_t** writer) {
@@ -163,9 +203,30 @@ int file_writer_alloc(struct file_writer_t** writer) {
         goto GET_OUT;
     }
 
+    /* Create the FIFO buffer based on the specified output sample format. */
+    if (!((*writer)->out_fifo = av_audio_fifo_alloc(out_audio_format, out_audio_num_channels, 1))) {
+        ret = CGS_FILE_WRITER_ERROR_NOMEM;
+        goto GET_OUT;
+    }
+
+    /* Create the file writer instances pointer array. */
+    if (!((*writer)->fw_instances = g_ptr_array_new())) {
+        ret = CGS_FILE_WRITER_ERROR_NOMEM;
+        goto GET_OUT;
+    }
+
+    char szFile[1024];
+    sprintf(szFile, "mount-origin/apprtc/conference_%p.mp4", *writer);
+    ret = file_writer_open(*writer, szFile, 1280, 720);
+    if (ret) {
+        ret = CGS_FILE_WRITER_ERROR_FFMPEG;
+        goto GET_OUT;
+    }
+
     GError* error;
     (*writer)->pgthread_rec = g_thread_try_new("cgs_file_writer_recording_thread", cgs_file_writer_recording_thread, *writer, &error);
     if ((*writer)->pgthread_rec == NULL) {
+        file_writer_close(*writer);
         ret = CGS_FILE_WRITER_ERROR_THREAD_CREATE;
         goto GET_OUT;
     }
@@ -178,6 +239,8 @@ GET_OUT:
             g_async_queue_unref((*writer)->main_loop_queue);
         if ((*writer)->main_context_hash_table)
             g_hash_table_destroy((*writer)->main_context_hash_table);
+        if ((*writer)->out_fifo)
+            av_audio_fifo_free((*writer)->out_fifo);
         free(*writer);
     }
     return (int)ret;
@@ -196,6 +259,7 @@ int file_writer_create_context(struct file_writer_t* writer, struct file_writer_
     }
 
     (*writer_instance)->file_writer = writer;
+    g_ptr_array_add(writer->fw_instances, *writer_instance);
 
     /* Start the global thread if not already */
     (*writer_instance)->main_loop_queue = g_async_queue_new_full(main_loop_queue_item_free);
@@ -228,8 +292,8 @@ int file_writer_create_context(struct file_writer_t* writer, struct file_writer_
     }
 
     char szFile[1024];
-    sprintf(szFile, "c:\\temp\\%p.mp4", *writer_instance);
-    ret = file_writer_open(*writer_instance, szFile, 1280, 720);
+    sprintf(szFile, "mount-origin/apprtc/single_%p.mp4", *writer_instance);
+    ret = file_writer_open_for_instance(*writer_instance, szFile, 1280, 720);
     if (ret) {
         g_hash_table_remove(writer->main_context_hash_table, (*writer_instance)->crn);
         goto GET_OUT;
@@ -260,7 +324,174 @@ GET_OUT:
 }
 
 
-int file_writer_open(struct file_writer_instance_t* file_writer, const char* filename, int out_width, int out_height)
+static int file_writer_open(struct file_writer_t* file_writer, const char* filename, int out_width, int out_height)
+{
+    int error;
+    AVDictionary* opt = NULL;
+
+    file_writer->out_height = out_height;
+    file_writer->out_width = out_width;
+
+    /* Create a new format context for the output container format. */
+    if (!(file_writer->format_ctx_out = avformat_alloc_context())) {
+        fprintf(stderr, "Could not allocate output format context\n");
+        return AVERROR(ENOMEM);
+    }
+
+    /* Open the output file to write to it. */
+    if ((error = avio_open(&(file_writer->format_ctx_out->pb), filename,
+        AVIO_FLAG_WRITE)) < 0) {
+        fprintf(stderr, "Could not open output file '%s' (error '%s')\n",
+            filename, av_err2str(error));
+        return error;
+    }
+
+    /* Guess the desired container format based on the file extension. */
+    if (!(file_writer->format_ctx_out->oformat = av_guess_format(NULL, filename, NULL))) {
+        fprintf(stderr, "Could not find output file format\n");
+        goto cleanup;
+    }
+
+    av_dump_format(file_writer->format_ctx_out, 0, filename, 1);
+
+    if (!(file_writer->format_ctx_out->url = av_strdup(filename))) {
+        fprintf(stderr, "Could not allocate url.\n");
+        error = AVERROR(ENOMEM);
+        goto cleanup;
+    }
+
+    file_writer->video_codec_out = avcodec_find_encoder(file_writer->format_ctx_out->oformat->video_codec); //avcodec_find_encoder(AV_CODEC_ID_MP3);
+    if (!file_writer->video_codec_out) {
+        fprintf(stderr, "Could not find an Video encoder.\n");
+        goto cleanup;
+    }
+
+    file_writer->audio_codec_out = avcodec_find_encoder(file_writer->format_ctx_out->oformat->audio_codec); //avcodec_find_encoder(AV_CODEC_ID_MP3);
+    if (!file_writer->audio_codec_out) {
+        fprintf(stderr, "Could not find an Audio encoder.\n");
+        goto cleanup;
+    }
+
+    /* Create a new audio stream in the output file container. */
+    if (!(file_writer->audio_stream = avformat_new_stream(file_writer->format_ctx_out, NULL))) {
+        fprintf(stderr, "Could not create new audio stream\n");
+        error = AVERROR(ENOMEM);
+        goto cleanup;
+    }
+
+    /* Create a new audio stream in the output file container. */
+    if (!(file_writer->video_stream = avformat_new_stream(file_writer->format_ctx_out, NULL))) {
+        fprintf(stderr, "Could not create new video stream\n");
+        error = AVERROR(ENOMEM);
+        goto cleanup;
+    }
+
+    file_writer->audio_ctx_out = avcodec_alloc_context3(file_writer->audio_codec_out);
+    if (!file_writer->audio_ctx_out) {
+        fprintf(stderr, "Could not allocate an encoding context\n");
+        error = AVERROR(ENOMEM);
+        goto cleanup;
+    }
+
+    file_writer->video_ctx_out = avcodec_alloc_context3(file_writer->video_codec_out);
+    if (!file_writer->video_ctx_out) {
+        fprintf(stderr, "Could not allocate an encoding context\n");
+        error = AVERROR(ENOMEM);
+        goto cleanup;
+    }
+
+    /* Stream params */
+    file_writer->audio_stream->time_base.num = 1;
+    file_writer->audio_stream->time_base.den = out_sample_rate;
+
+    /* Codec configuration */
+    file_writer->audio_ctx_out->bit_rate = 96000;
+    file_writer->audio_ctx_out->sample_fmt = out_audio_format;
+    file_writer->audio_ctx_out->sample_rate = out_sample_rate;
+    file_writer->audio_ctx_out->channels = 1;
+    file_writer->audio_ctx_out->channel_layout = AV_CH_LAYOUT_MONO;
+    file_writer->audio_ctx_out->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
+    file_writer->audio_ctx_out->time_base.num = 1;
+    file_writer->audio_ctx_out->time_base.den = out_sample_rate;
+
+    /* put sample parameters */
+    file_writer->video_ctx_out->qmin = 20;
+    /* resolution must be a multiple of two */
+    file_writer->video_ctx_out->width = file_writer->out_width;
+    file_writer->video_ctx_out->height = file_writer->out_height;
+    file_writer->video_ctx_out->pix_fmt = out_pix_format;
+    file_writer->video_ctx_out->time_base = global_time_base;
+    //video_ctx_out->max_b_frames = 1;
+
+    if (file_writer->format_ctx_out->oformat->video_codec == AV_CODEC_ID_H264) {
+        av_opt_set(file_writer->video_ctx_out->priv_data, "preset", "fast", 0);
+    }
+
+    /* Some formats want stream headers to be separate. */
+    if (file_writer->format_ctx_out->oformat->flags & AVFMT_GLOBALHEADER)
+        file_writer->audio_ctx_out->flags |= CODEC_FLAG_GLOBAL_HEADER;
+
+    /* Open the encoder for the audio stream to use it later. */
+    if ((error = avcodec_open2(file_writer->audio_ctx_out, file_writer->audio_codec_out, NULL)) < 0) {
+        fprintf(stderr, "Could not open output codec (error '%s')\n",
+            av_err2str(error));
+        goto cleanup;
+    }
+
+    /* Open the encoder for the video stream to use it later. */
+    if ((error = avcodec_open2(file_writer->video_ctx_out, file_writer->video_codec_out, NULL)) < 0) {
+        fprintf(stderr, "Could not open output codec (error '%s')\n",
+            av_err2str(error));
+        goto cleanup;
+    }
+
+    error = avcodec_parameters_from_context(file_writer->audio_stream->codecpar, file_writer->audio_ctx_out);
+    if (error < 0) {
+        fprintf(stderr, "Could not initialize stream parameters\n");
+        goto cleanup;
+    }
+
+    error = avcodec_parameters_from_context(file_writer->video_stream->codecpar, file_writer->video_ctx_out);
+    if (error < 0) {
+        fprintf(stderr, "Could not initialize stream parameters\n");
+        goto cleanup;
+    }
+
+    /* Write the stream header, if any. */
+    error = avformat_write_header(file_writer->format_ctx_out, &opt);
+    if (error < 0) {
+        fprintf(stderr, "Error occurred when writing header to file: %s\n", av_err2str(error));
+        goto cleanup;
+    }
+
+    /* Create the FIFO buffer based on the specified output sample format. */
+    if (!(file_writer->out_fifo = av_audio_fifo_alloc(file_writer->audio_ctx_out->sample_fmt, file_writer->audio_ctx_out->channels, 1))) {
+        fprintf(stderr, "Could not allocate FIFO\n");
+        error = AVERROR(ENOMEM);
+        goto cleanup;
+    }
+
+    /* Create the FIFO buffer based on the specified output sample format. */
+    if (error = audio_mixer_alloc(&file_writer->audio_mixer, file_writer->audio_ctx_out)) {
+        fprintf(stderr, "Could not allocate audio mixer\n");
+        goto cleanup;
+    }
+
+    printf("Ready to encode %s\n", filename);
+    return 0;
+
+cleanup:
+    avcodec_free_context(&file_writer->audio_ctx_out);
+    avcodec_free_context(&file_writer->video_ctx_out);
+    avio_closep(&file_writer->format_ctx_out->pb);
+    avformat_free_context(file_writer->format_ctx_out);
+    file_writer->format_ctx_out = NULL;
+    if (file_writer->out_fifo)
+        av_audio_fifo_free(file_writer->out_fifo);
+    return error;
+}
+
+static int file_writer_open_for_instance(struct file_writer_instance_t* file_writer, const char* filename, int out_width, int out_height)
 {
     int error;
     AVDictionary* opt = NULL;
@@ -401,9 +632,16 @@ int file_writer_open(struct file_writer_instance_t* file_writer, const char* fil
         goto cleanup;
     }
 
+    /* Create the FIFO buffer based on the specified input sample format. */
+    if (!(file_writer->in_fifo = av_audio_fifo_alloc(src_audio_format, src_audio_num_channels, 1))) {
+        fprintf(stderr, "Could not allocate in FIFO\n");
+        error = AVERROR(ENOMEM);
+        goto cleanup;
+    }
+
     /* Create the FIFO buffer based on the specified output sample format. */
-    if (!(file_writer->fifo = av_audio_fifo_alloc(file_writer->audio_ctx_out->sample_fmt, file_writer->audio_ctx_out->channels, 1))) {
-        fprintf(stderr, "Could not allocate FIFO\n");
+    if (!(file_writer->out_fifo = av_audio_fifo_alloc(file_writer->audio_ctx_out->sample_fmt, file_writer->audio_ctx_out->channels, 1))) {
+        fprintf(stderr, "Could not allocate out FIFO\n");
         error = AVERROR(ENOMEM);
         goto cleanup;
     }
@@ -438,6 +676,11 @@ cleanup:
     avio_closep(&file_writer->format_ctx_out->pb);
     avformat_free_context(file_writer->format_ctx_out);
     file_writer->format_ctx_out = NULL;
+    if (file_writer->in_fifo)
+        av_audio_fifo_free(file_writer->in_fifo);
+    if (file_writer->out_fifo)
+        av_audio_fifo_free(file_writer->out_fifo);
+
     return error;
 }
 
@@ -467,7 +710,7 @@ static int init_swscaler(struct file_writer_instance_t *file_writer, struct swsc
  * If the input and output sample formats differ, a conversion is required
  * libswresample takes care of this, but requires initialization.
  */
-static int init_resampler(struct resampler_t *resampler)
+static int init_resampler(struct resampler_t *resampler, int64_t out_ch_layout, enum AVSampleFormat out_sample_fmt, int out_sample_rate)
 {
     int error;
     SwrContext** resample_context = &resampler->resample_context;
@@ -480,9 +723,9 @@ static int init_resampler(struct resampler_t *resampler)
      */
     *resample_context =
     swr_alloc_set_opts(NULL,
-                        av_get_default_channel_layout(1),
-                        AV_SAMPLE_FMT_FLTP,
-                        48000,
+                        out_ch_layout,
+                        out_sample_fmt,
+                        out_sample_rate,
                         av_get_default_channel_layout(resampler->channels),
                         resampler->sample_fmt,
                         resampler->sample_rate, 0, NULL);
@@ -502,12 +745,7 @@ static int init_resampler(struct resampler_t *resampler)
 }
 
 
-static int safe_write_packet(struct file_writer_instance_t* file_writer, AVPacket* packet)
-{
-    return av_interleaved_write_frame(file_writer->format_ctx_out, packet);
-}
-
-static int write_audio_frame(struct file_writer_instance_t* file_writer, AVFrame* frame, int* data_present)
+static int write_audio_frame(struct file_writer_t* file_writer, AVFrame* frame, int* data_present)
 {
     int ret;
     AVPacket pkt;
@@ -552,7 +790,60 @@ static int write_audio_frame(struct file_writer_instance_t* file_writer, AVFrame
         file_writer->audio_frame_ct, pkt.size, pkt.pts, pkt.duration);
     file_writer->audio_frame_ct++;
 
-    ret = safe_write_packet(file_writer, &pkt);
+    ret = av_write_frame(file_writer->format_ctx_out, &pkt);
+    if (ret < 0) {
+        fprintf(stderr, "av_write_frame() for audio frame failed: %s\n", av_err2str(ret));
+    }
+    av_packet_unref(&pkt);
+    return ret;
+}
+
+static int write_audio_frame_for_instance(struct file_writer_instance_t* file_writer, AVFrame* frame, int* data_present)
+{
+    int ret;
+    AVPacket pkt;
+    av_init_packet(&pkt);
+    /* Set the packet data and size so that it is recognized as being empty. */
+    pkt.data = NULL;
+    pkt.size = 0;
+
+    if (frame) {
+        frame->pts = file_writer->next_audio_pts;
+        file_writer->next_audio_pts = frame->pts + frame->nb_samples;
+    }
+
+    /* encode the frame */
+    ret = avcodec_send_frame(file_writer->audio_ctx_out, frame);
+    if (ret == AVERROR_EOF) {
+        ;
+    }
+    else if (ret < 0) {
+        fprintf(stderr, "Error encoding audio frame, avcodec_send_frame() failed: %s\n", av_err2str(ret));
+        av_packet_unref(&pkt);
+        return ret;
+    }
+
+    ret = avcodec_receive_packet(file_writer->audio_ctx_out, &pkt);
+    if ((AVERROR(EAGAIN) == ret) || (ret == AVERROR_EOF)) {
+        av_packet_unref(&pkt);
+        return 0;
+    }
+    else if (ret < 0) {
+        fprintf(stderr, "Error encoding audio frame, avcodec_receive_packet() failed: %s\n", av_err2str(ret));
+        av_packet_unref(&pkt);
+        return ret;
+    }
+
+    if (data_present)
+        *data_present = 1;
+    pkt.stream_index = file_writer->audio_stream->index;
+
+    /* Write the compressed frame to the media file. */
+    printf("Write audio frame %lld, size=%d pts=%lld duration=%lld\n",
+        file_writer->audio_frame_ct, pkt.size, pkt.pts, pkt.duration);
+    file_writer->audio_frame_ct++;
+
+    ret = av_interleaved_write_frame(file_writer->format_ctx_out, &pkt);
     av_packet_unref(&pkt);
     return ret;
 }
@@ -663,7 +954,7 @@ int file_writer_push_video_frame(struct file_writer_instance_t* file_writer, int
     return 0;
 }
 
-int file_writer_close(struct file_writer_instance_t* file_writer)
+static int file_writer_close(struct file_writer_t* file_writer)
 {
     /* Flush the encoder as it may have delayed frames. */
     int data_written;
@@ -682,12 +973,6 @@ int file_writer_close(struct file_writer_instance_t* file_writer)
         printf("no trailer!\n");
     }
 
-    if (file_writer->audio_filter_graph)
-        avfilter_graph_free(&file_writer->audio_filter_graph);
-
-    if (file_writer->video_filter_graph)
-        avfilter_graph_free(&file_writer->video_filter_graph);
-
     if(file_writer->video_ctx_out)
         avcodec_close(file_writer->video_ctx_out);
 
@@ -697,7 +982,55 @@ int file_writer_close(struct file_writer_instance_t* file_writer)
     if (!(file_writer->format_ctx_out->oformat->flags & AVFMT_NOFILE)) {
         avio_closep(&file_writer->format_ctx_out->pb);
     }
-    
+
+    avformat_free_context(file_writer->format_ctx_out);
+
+    if (file_writer->out_fifo)
+        av_audio_fifo_free(file_writer->out_fifo);
+
+    /* Create the FIFO buffer based on the specified output sample format. */
+    if (file_writer->audio_mixer)
+        audio_mixer_free(file_writer->audio_mixer);
+
+    printf("File write done for conference!\n");
+    return 0;
+}
+
+static int file_writer_close_for_instance(struct file_writer_instance_t* file_writer)
+{
+    /* Flush the encoder as it may have delayed frames. */
+    int data_written;
+    do {
+        data_written = 0;
+        write_audio_frame_for_instance(file_writer, NULL, &data_written);
+    } while (data_written);
+
+    do {
+        data_written = 0;
+        write_video_frame_for_instance(file_writer, NULL, &data_written);
+    } while (data_written);
+
+    int ret = av_write_trailer(file_writer->format_ctx_out);
+    if (ret) {
+        printf("no trailer!\n");
+    }
+
+    if (file_writer->audio_filter_graph)
+        avfilter_graph_free(&file_writer->audio_filter_graph);
+
+    if (file_writer->video_filter_graph)
+        avfilter_graph_free(&file_writer->video_filter_graph);
+
+    if (file_writer->video_ctx_out)
+        avcodec_close(file_writer->video_ctx_out);
+
+    if (file_writer->audio_ctx_out)
+        avcodec_close(file_writer->audio_ctx_out);
+
+    if (!(file_writer->format_ctx_out->oformat->flags & AVFMT_NOFILE)) {
+        avio_closep(&file_writer->format_ctx_out->pb);
+    }
+
     avformat_free_context(file_writer->format_ctx_out);
 
     if (file_writer->filep) {
@@ -721,10 +1054,11 @@ int file_writer_close(struct file_writer_instance_t* file_writer)
             break;
     }
 
-    if (file_writer->fifo)
-        av_audio_fifo_free(file_writer->fifo);
-
-    printf("File write done!\n");
+    if (file_writer->out_fifo)
+        av_audio_fifo_free(file_writer->out_fifo);
+    if (file_writer->in_fifo)
+        av_audio_fifo_free(file_writer->in_fifo);
+    printf("File write done for instance!\n");
     return 0;
 }
 
@@ -744,6 +1078,7 @@ void file_writer_free(struct file_writer_t* file_writer) {
     struct file_writer_event_queue_item_t* event = (struct file_writer_event_queue_item_t*) calloc(1, sizeof(struct file_writer_event_queue_item_t));
     if (event) {
         event->event = FILE_WRITER_EVENT_FREED;
+        g_usleep(1000000);
         g_async_queue_push(file_writer->main_loop_queue, event);
     }
 }
@@ -981,7 +1316,139 @@ end:
     return ret;
 }
 
-int process_audio_frame(struct file_writer_instance_t* file_writer, AVFrame* frame)
+static int process_audio_frame(struct file_writer_t* file_writer, struct file_writer_instance_t* file_writer_instance, AVFrame* frame)
+{
+    int ret = -1; unsigned int i;
+
+    if (file_writer->next_audio_pts < file_writer_instance->next_audio_pts_for_mixer) {
+        AVFrame* output_frame = NULL;
+        audio_mixer_finish(file_writer->audio_mixer, &output_frame);
+        ret = write_audio_frame(file_writer, output_frame, NULL);
+        audio_mixer_start(file_writer->audio_mixer);
+        if (ret) {
+            fprintf(stderr, "write_audio_frame() failed %s\n", av_err2str(ret));
+            goto exit;
+        }
+    }
+
+    /* Mix frame if required*/
+    if (av_audio_fifo_size(file_writer_instance->in_fifo) >= file_writer->audio_ctx_out->frame_size) {
+        /* Allocate the input frame */
+        AVFrame* input_frame = av_frame_alloc();
+        if (!input_frame) {
+            fprintf(stderr, "av_frame_alloc() failed\n");
+            ret = AVERROR(ENOMEM);
+            goto exit;
+        }
+        input_frame->nb_samples = file_writer->audio_ctx_out->frame_size;
+        input_frame->channels = 1;
+        input_frame->channel_layout = av_get_default_channel_layout(input_frame->channels);
+        input_frame->format = AV_SAMPLE_FMT_S16;
+        input_frame->sample_rate = 48000;
+        input_frame->pts = file_writer_instance->next_audio_pts_for_mixer;
+        if ((ret = av_frame_get_buffer(input_frame, 0)) < 0) {
+            fprintf(stderr, "Could not allocate input frame samples (error '%s')\n", av_err2str(ret));
+            av_frame_free(&input_frame);
+            goto exit;
+        }
+
+        /* Read one frame from the fifo */
+        ret = av_audio_fifo_read(file_writer_instance->in_fifo, (void**)input_frame->data, file_writer->audio_ctx_out->frame_size);
+        if (ret == file_writer->audio_ctx_out->frame_size) {
+            audio_mixer_add_frame(file_writer->audio_mixer, input_frame);
+            file_writer_instance->next_audio_pts_for_mixer += input_frame->nb_samples;
+        }
+        av_frame_free(&input_frame);
+    }
+
+    /* Find\allocate resampler */
+    for (i = 0; i < MAX_RESAMPLERS; ++i) {
+        /* Find/allocate resampler */
+        if (!file_writer->resamplers[i].resample_context) {
+            file_writer->resamplers[i].channels = frame->channels;
+            file_writer->resamplers[i].sample_fmt = frame->format;
+            file_writer->resamplers[i].sample_rate = frame->sample_rate;
+            ret = init_resampler(&(file_writer->resamplers[i]), av_get_default_channel_layout(1), AV_SAMPLE_FMT_S16, 48000);
+            break;
+        }
+        else if (file_writer->resamplers[i].channels == frame->channels &&
+            file_writer->resamplers[i].sample_rate == frame->sample_rate &&
+            file_writer->resamplers[i].sample_fmt == frame->format) {
+            ret = 0;
+            break;
+        }
+    }
+    if (!ret && i < MAX_RESAMPLERS) {
+        AVFrame* avframe = av_frame_alloc();
+        avframe->format = AV_SAMPLE_FMT_S16;
+        avframe->channels = 1;
+        avframe->channel_layout = av_get_default_channel_layout(1);
+        avframe->sample_rate = 48000;
+
+        ret = swr_convert_frame(file_writer->resamplers[i].resample_context, avframe, frame);
+        if (ret) {
+            fprintf(stderr, "swr_convert_frame() failed: [%s]\n", av_err2str(ret));
+            av_frame_free(&avframe);
+            goto exit;
+        }
+
+        /* Make the FIFO as large as it needs to be to hold both the old and the new samples. */
+        ret = av_audio_fifo_realloc(file_writer_instance->in_fifo, av_audio_fifo_size(file_writer_instance->in_fifo) + avframe->nb_samples);
+        if (ret) {
+            fprintf(stderr, "av_audio_fifo_realloc() failed: [%s]\n", av_err2str(ret));
+            av_frame_free(&avframe);
+            goto exit;
+        }
+
+        /* Store the new samples in the FIFO buffer. */
+        ret = av_audio_fifo_write(file_writer_instance->in_fifo, avframe->data, avframe->nb_samples);
+        if (ret < avframe->nb_samples) {
+            fprintf(stderr, "av_audio_fifo_write() failed: [%s]\n", av_err2str(ret));
+            av_frame_free(&avframe);
+            goto exit;
+        }
+        av_frame_free(&avframe);
+
+        /* Fetch any remaining samples */
+        avframe = av_frame_alloc();
+        avframe->format = AV_SAMPLE_FMT_S16;
+        avframe->channels = 1;
+        avframe->channel_layout = av_get_default_channel_layout(1);
+        avframe->sample_rate = 48000;
+        int64_t delay = swr_get_delay(file_writer->resamplers[i].resample_context, avframe->sample_rate);
+        if (delay) {
+            avframe->pts = ((frame->pts * avframe->sample_rate) / 1000000) + delay;
+            ret = swr_convert_frame(file_writer->resamplers[i].resample_context, avframe, NULL);
+            if (ret) {
+                fprintf(stderr, "swr_convert_frame() failed: [%s]\n", av_err2str(ret));
+                av_frame_free(&avframe);
+                goto exit;
+            }
+
+            /* Make the FIFO as large as it needs to be to hold both the old and the new samples. */
+            ret = av_audio_fifo_realloc(file_writer_instance->in_fifo, av_audio_fifo_size(file_writer_instance->in_fifo) + avframe->nb_samples);
+            if (ret) {
+                fprintf(stderr, "av_audio_fifo_realloc() failed: [%s]\n", av_err2str(ret));
+                av_frame_free(&avframe);
+                goto exit;
+            }
+
+            /* Store the new samples in the FIFO buffer. */
+            ret = av_audio_fifo_write(file_writer_instance->in_fifo, avframe->data, avframe->nb_samples);
+            if (ret < avframe->nb_samples) {
+                fprintf(stderr, "av_audio_fifo_write() failed: [%s]\n", av_err2str(ret));
+                av_frame_free(&avframe);
+                goto exit;
+            }
+            av_frame_free(&avframe);
+        }
+    }
+
+exit:
+    return ret;
+}
+
+static int process_audio_frame_for_instance(struct file_writer_instance_t* file_writer, AVFrame* frame)
 {
 #if USE_AUDIO_FILTER
     AVFrame* filt_frame = av_frame_alloc();
@@ -1014,7 +1481,7 @@ int process_audio_frame(struct file_writer_instance_t* file_writer, AVFrame* fra
             file_writer->resamplers[i].channels = frame->channels;
             file_writer->resamplers[i].sample_fmt = frame->format;
             file_writer->resamplers[i].sample_rate = frame->sample_rate;
-            ret = init_resampler(&(file_writer->resamplers[i]));
+            ret = init_resampler(&(file_writer->resamplers[i]), av_get_default_channel_layout(1), AV_SAMPLE_FMT_FLTP, 48000);
             break;
         }
         else if (file_writer->resamplers[i].channels == frame->channels &&
@@ -1030,7 +1497,6 @@ int process_audio_frame(struct file_writer_instance_t* file_writer, AVFrame* fra
         avframe->channels = 1;
         avframe->channel_layout = av_get_default_channel_layout(avframe->channels);
         avframe->sample_rate = 48000;
-        avframe->pts = (frame->pts * avframe->sample_rate) / 1000000;
 
         ret = swr_convert_frame(file_writer->resamplers[i].resample_context, avframe, frame);
         if (ret) {
@@ -1040,7 +1506,7 @@ int process_audio_frame(struct file_writer_instance_t* file_writer, AVFrame* fra
         }
 
         /* Make the FIFO as large as it needs to be to hold both the old and the new samples. */
-        ret = av_audio_fifo_realloc(file_writer->fifo, av_audio_fifo_size(file_writer->fifo) + avframe->nb_samples);
+        ret = av_audio_fifo_realloc(file_writer->out_fifo, av_audio_fifo_size(file_writer->out_fifo) + avframe->nb_samples);
         if (ret) {
             fprintf(stderr, "av_audio_fifo_realloc() failed: [%s]\n", av_err2str(ret));
             av_frame_free(&avframe);
@@ -1048,7 +1514,7 @@ int process_audio_frame(struct file_writer_instance_t* file_writer, AVFrame* fra
         }
 
         /* Store the new samples in the FIFO buffer. */
-        ret = av_audio_fifo_write(file_writer->fifo, avframe->data, avframe->nb_samples);
+        ret = av_audio_fifo_write(file_writer->out_fifo, avframe->data, avframe->nb_samples);
         if (ret < avframe->nb_samples) {
             fprintf(stderr, "av_audio_fifo_write() failed: [%s]\n", av_err2str(ret));
             av_frame_free(&avframe);
@@ -1073,7 +1539,7 @@ int process_audio_frame(struct file_writer_instance_t* file_writer, AVFrame* fra
             }
 
             /* Make the FIFO as large as it needs to be to hold both the old and the new samples. */
-            ret = av_audio_fifo_realloc(file_writer->fifo, av_audio_fifo_size(file_writer->fifo) + avframe->nb_samples);
+            ret = av_audio_fifo_realloc(file_writer->out_fifo, av_audio_fifo_size(file_writer->out_fifo) + avframe->nb_samples);
             if (ret) {
                 fprintf(stderr, "av_audio_fifo_realloc() failed: [%s]\n", av_err2str(ret));
                 av_frame_free(&avframe);
@@ -1081,64 +1547,65 @@ int process_audio_frame(struct file_writer_instance_t* file_writer, AVFrame* fra
             }
 
             /* Store the new samples in the FIFO buffer. */
-            ret = av_audio_fifo_write(file_writer->fifo, avframe->data, avframe->nb_samples);
+            ret = av_audio_fifo_write(file_writer->out_fifo, avframe->data, avframe->nb_samples);
             if (ret < avframe->nb_samples) {
                 fprintf(stderr, "av_audio_fifo_write() failed: [%s]\n", av_err2str(ret));
                 av_frame_free(&avframe);
             }
             av_frame_free(&avframe);
         }
-
-        /* Pull samples from the audio fifo and write to file */
-        while (av_audio_fifo_size(file_writer->fifo) >= file_writer->audio_ctx_out->frame_size) {
-            /* Take one frame worth of audio samples from the FIFO buffer, * encode it and write it to the output file. */
-            AVFrame* output_frame = av_frame_alloc();
-            if (!output_frame) {
-                fprintf(stderr, "av_frame_alloc() failed\n");
-                ret = AVERROR(ENOMEM);
-                goto exit;
-            }
-
-            /* Set the frame's parameters, especially its size and format.
-             * av_frame_get_buffer needs this to allocate memory for the
-             * audio samples of the frame.
-             * Default channel layouts based on the number of channels
-             * are assumed for simplicity. */
-            output_frame->nb_samples = file_writer->audio_ctx_out->frame_size;
-            output_frame->channel_layout = file_writer->audio_ctx_out->channel_layout;
-            output_frame->format = file_writer->audio_ctx_out->sample_fmt;
-            output_frame->sample_rate = file_writer->audio_ctx_out->sample_rate;
-
-            /* Allocate the samples of the created frame. This call will make
-            * sure that the audio frame can hold as many samples as specified. */
-            if ((ret = av_frame_get_buffer(output_frame, 0)) < 0) {
-                fprintf(stderr, "Could not allocate output frame samples (error '%s')\n", av_err2str(ret));
-                av_frame_free(&output_frame);
-                goto exit;
-            }
-
-            /* Read as many samples from the FIFO buffer as required to fill the frame.
-             * The samples are stored in the frame temporarily. */
-            ret = av_audio_fifo_read(file_writer->fifo, (void**)output_frame->data, file_writer->audio_ctx_out->frame_size);
-            if (ret < file_writer->audio_ctx_out->frame_size) {
-                fprintf(stderr, "Could not read data from FIFO %s\n", av_err2str(ret));
-                av_frame_free(&output_frame);
-                goto exit;
-            }
-
-            ret = write_audio_frame(file_writer, output_frame, NULL);
-            if (ret) {
-                fprintf(stderr, "write_audio_frame() failed %s\n", av_err2str(ret));
-                av_frame_free(&output_frame);
-                goto exit;
-            }
-            av_frame_free(&output_frame);
-        }
     }
     else {
         fprintf(stderr, "Could not allocate resampler\n");
         goto exit;
     }
+
+    /* Pull samples from the audio fifo and write to file */
+    while (av_audio_fifo_size(file_writer->out_fifo) >= file_writer->audio_ctx_out->frame_size) {
+        /* Take one frame worth of audio samples from the FIFO buffer, * encode it and write it to the output file. */
+        AVFrame* output_frame = av_frame_alloc();
+        if (!output_frame) {
+            fprintf(stderr, "av_frame_alloc() failed\n");
+            ret = AVERROR(ENOMEM);
+            goto exit;
+        }
+
+        /* Set the frame's parameters, especially its size and format.
+            * av_frame_get_buffer needs this to allocate memory for the
+            * audio samples of the frame.
+            * Default channel layouts based on the number of channels
+            * are assumed for simplicity. */
+        output_frame->nb_samples = file_writer->audio_ctx_out->frame_size;
+        output_frame->channel_layout = file_writer->audio_ctx_out->channel_layout;
+        output_frame->format = file_writer->audio_ctx_out->sample_fmt;
+        output_frame->sample_rate = file_writer->audio_ctx_out->sample_rate;
+
+        /* Allocate the samples of the created frame. This call will make
+        * sure that the audio frame can hold as many samples as specified. */
+        if ((ret = av_frame_get_buffer(output_frame, 0)) < 0) {
+            fprintf(stderr, "Could not allocate output frame samples (error '%s')\n", av_err2str(ret));
+            av_frame_free(&output_frame);
+            goto exit;
+        }
+
+        /* Read as many samples from the FIFO buffer as required to fill the frame.
+            * The samples are stored in the frame temporarily. */
+        ret = av_audio_fifo_read(file_writer->out_fifo, (void**)output_frame->data, file_writer->audio_ctx_out->frame_size);
+        if (ret < file_writer->audio_ctx_out->frame_size) {
+            fprintf(stderr, "Could not read data from FIFO %s\n", av_err2str(ret));
+            av_frame_free(&output_frame);
+            goto exit;
+        }
+
+        ret = write_audio_frame_for_instance(file_writer, output_frame, NULL);
+        if (ret) {
+            fprintf(stderr, "write_audio_frame() failed %s\n", av_err2str(ret));
+            av_frame_free(&output_frame);
+            goto exit;
+        }
+        av_frame_free(&output_frame);
+    }
+
 #else
     int ret = write_audio_frame(file_writer, frame);
 #endif
@@ -1147,7 +1614,31 @@ exit:
     return ret;
 }
 
-int process_video_frame(struct file_writer_instance_t* file_writer, AVFrame *frame) {
+
+
+int process_video_frame(struct file_writer_t* file_writer, struct file_writer_instance_t* file_writer_instance, AVFrame* frame) {
+    int ret = -1;
+    AVFrame* avframe = av_frame_alloc();
+    avframe->format = AV_PIX_FMT_YUV420P;
+    avframe->width = file_writer->out_width;
+    avframe->height = file_writer->out_height;
+    avframe->pts = frame->pts;
+    int numBytes = av_image_get_buffer_size(AV_PIX_FMT_YUV420P, avframe->width, avframe->height, 1);;
+    uint8_t* buffer = (uint8_t*)av_malloc(numBytes * sizeof(uint8_t));
+
+    ret = av_image_fill_arrays(avframe->data, avframe->linesize, buffer, AV_PIX_FMT_YUV420P, avframe->width, avframe->height, 1);
+    if (ret < 0) {
+        fprintf(stderr, "Could not allocate raw picture buffer\n");
+    }
+    else {
+        write_video_frame(file_writer, avframe, NULL);
+    }
+    av_free(buffer);
+    av_frame_free(&avframe);
+    return ret;
+}
+
+int process_video_frame_for_instance(struct file_writer_instance_t* file_writer, AVFrame *frame) {
 #if USE_VIDEO_FILTER
     AVFrame *filt_frame = av_frame_alloc();
 
@@ -1172,7 +1663,7 @@ int process_video_frame(struct file_writer_instance_t* file_writer, AVFrame *fra
         if (ret < 0) {
             goto end;
         }
-        write_video_frame(file_writer, filt_frame, NULL);
+        write_video_frame_for_instance(file_writer, filt_frame, NULL);
         av_frame_unref(filt_frame);
     }
 end:
@@ -1216,7 +1707,7 @@ end:
                 fflush(stderr);
             }
             else {
-                write_video_frame(file_writer, avframe, NULL);
+                write_video_frame_for_instance(file_writer, avframe, NULL);
             }
         }
         av_free(buffer);
@@ -1226,7 +1717,7 @@ end:
         fprintf(stderr, "Could not allocate swscaler\n");
     }
 #else
-    int ret = write_video_frame(file_writer, frame, NULL);
+    int ret = write_video_frame_for_instance(file_writer, frame, NULL);
 #endif
 #endif
     return ret;
@@ -1268,22 +1759,25 @@ static gpointer cgs_file_writer_recording_thread(gpointer context)
         if (event) {
             struct file_writer_instance_t* pfw = (struct file_writer_instance_t*)g_hash_table_lookup(file_writer->main_context_hash_table, event->context);
             if (pfw) {
-                printf("\n\nFILE WRITER INSTANCE[%s] Got event %d\n\n", event->context, event->event);
+                printf("\n\nFILE WRITER[%s] Got event %d\n\n", event->context, event->event);
                 switch (event->event) {
                     case FILE_WRITER_EVENT_CREATED: {
                         break;
                     }
                     case FILE_WRITER_EVENT_AUDIO_FRAME: {
+                        process_audio_frame(file_writer, pfw, (AVFrame*)event->in);
                         av_frame_free(&(AVFrame*)event->in);
                         break;
                     }
                     case FILE_WRITER_EVENT_VIDEO_FRAME: {
+                        //process_video_frame(file_writer, pfw, (AVFrame*)event->in);
                         av_frame_free(&(AVFrame*)event->in);
                         break;
                     }
                     case FILE_WRITER_EVENT_DESTROYED: {
-                        file_writer_close(pfw);
+                        file_writer_close_for_instance(pfw);
                         g_hash_table_remove(file_writer->main_context_hash_table, event->context);
+                        g_ptr_array_remove(file_writer->fw_instances, event->context);
                         free(event->context);
                         free(pfw);
                         break;
@@ -1291,6 +1785,7 @@ static gpointer cgs_file_writer_recording_thread(gpointer context)
                 }
             }
             else if (event->event == FILE_WRITER_EVENT_FREED) {
+                printf("\n\nFILE WRITER[%s] Got event %d\n\n", event->context, event->event);
                 file_writer->exit = 1;
             } else {
                 printf("\n\nStray event %d\n\n", event->event);
@@ -1299,8 +1794,10 @@ static gpointer cgs_file_writer_recording_thread(gpointer context)
         }
     }
 
+    file_writer_close(file_writer);
     g_async_queue_unref(file_writer->main_loop_queue);
     g_hash_table_destroy(file_writer->main_context_hash_table);
+    g_ptr_array_free(file_writer->fw_instances, TRUE);
     free(file_writer);
     int retval;
     g_thread_exit(&retval);
@@ -1318,13 +1815,14 @@ static gpointer cgs_file_writer_individual_recording_thread(gpointer context)
     while (!file_writer->exit) {
         struct file_writer_event_queue_item_t* event = (struct file_writer_event_queue_item_t*)g_async_queue_timeout_pop(file_writer->main_loop_queue, 1000000);
         if (event) {
+            printf("\n\nFILE WRITER INSTANCE[%s] Got event %d\n\n", event->context, event->event);
             switch (event->event) {
                 case FILE_WRITER_EVENT_AUDIO_FRAME: {
-                    process_audio_frame(file_writer, (AVFrame*)event->in);
+                    process_audio_frame_for_instance(file_writer, (AVFrame*)event->in);
                     break;
                 }
                 case FILE_WRITER_EVENT_VIDEO_FRAME: {
-                    process_video_frame(file_writer, (AVFrame*)event->in);
+                    process_video_frame_for_instance(file_writer, (AVFrame*)event->in);
                     break;
                 }
                 case FILE_WRITER_EVENT_DESTROYED: {
@@ -1342,7 +1840,7 @@ static gpointer cgs_file_writer_individual_recording_thread(gpointer context)
     return NULL;
 }
 
-static int write_video_frame(struct file_writer_instance_t* file_writer, AVFrame* frame, int* data_present)
+static int write_video_frame(struct file_writer_t* file_writer, AVFrame* frame, int* data_present)
 {
     int ret;
     AVPacket pkt = { 0 };
@@ -1382,7 +1880,53 @@ static int write_video_frame(struct file_writer_instance_t* file_writer, AVFrame
     printf("Write video frame %lld, size=%d pts=%lld\n",
         file_writer->video_frame_ct, pkt.size, pkt.pts);
     file_writer->video_frame_ct++;
-    ret = safe_write_packet(file_writer, &pkt);
+    ret = av_interleaved_write_frame(file_writer->format_ctx_out, &pkt);
+    av_packet_unref(&pkt);
+    return ret;
+}
+
+
+static int write_video_frame_for_instance(struct file_writer_instance_t* file_writer, AVFrame* frame, int* data_present)
+{
+    int ret;
+    AVPacket pkt = { 0 };
+    av_init_packet(&pkt);
+
+    /* encode the image */
+    ret = avcodec_send_frame(file_writer->video_ctx_out, frame);
+    if (ret == AVERROR_EOF) {
+        av_packet_unref(&pkt);
+        return 0;
+    }
+    else if (ret < 0) {
+        fprintf(stderr, "Error encoding video frame, avcodec_send_frame() failed: %s\n", av_err2str(ret));
+        av_packet_unref(&pkt);
+        return ret;
+    }
+
+    ret = avcodec_receive_packet(file_writer->video_ctx_out, &pkt);
+    if ((AVERROR(EAGAIN) == ret) || (ret == AVERROR_EOF)) {
+        av_packet_unref(&pkt);
+        return 0;
+    }
+    else if (ret < 0) {
+        fprintf(stderr, "Error encoding video frame, avcodec_receive_packet() failed: %s\n", av_err2str(ret));
+        av_packet_unref(&pkt);
+        return ret;
+    }
+
+    if (data_present)
+        *data_present = 1;
+
+    /* rescale output packet timestamp values from codec to stream timebase */
+    av_packet_rescale_ts(&pkt, global_time_base, file_writer->video_stream->time_base);
+    pkt.stream_index = file_writer->video_stream->index;
+
+    /* Write the compressed frame to the media file. */
+    printf("Write video frame %lld, size=%d pts=%lld\n",
+        file_writer->video_frame_ct, pkt.size, pkt.pts);
+    file_writer->video_frame_ct++;
+    ret = av_interleaved_write_frame(file_writer->format_ctx_out, &pkt);
     av_packet_unref(&pkt);
     return ret;
 }

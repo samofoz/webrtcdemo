@@ -30,6 +30,9 @@
     <ClCompile Include="media_file_writer.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="audio_mixer.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Websockets.h">
@@ -42,6 +45,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="media_file_writer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="audio_mixer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

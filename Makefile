@@ -1,7 +1,7 @@
 TARGET ?= webrtcdemo
 SRC_DIRS ?= ./
 
-SRCS := GoogleWebRTC.cpp WebRTC_Server.cpp Websockets.c fake_audio_capture_module.cc
+SRCS := GoogleWebRTC.cpp WebRTC_Server.cpp Websockets.c media_file_writer.c fake_audio_capture_module.cc
 OBJS := $(addsuffix .o,$(basename $(SRCS)))
 DEPS := $(OBJS:.o=.d)
 

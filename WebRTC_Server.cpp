@@ -224,6 +224,8 @@ int main()
 				printf("\n\n[%s] Got event %s\n\n", event->context, cgs_get_event_str(event->event));
 				switch (event->event) {
 				case CGS_EVENT_WEBSOCKET_CONNECTED: {
+					if(!g_task_info.pcgs_webrtc_conference)
+						cgs_webrtc_create_conference(g_task_info.pcgs_webrtc, &g_task_info.pcgs_webrtc_conference, NULL, NULL);
 					//cgs_websockets_send(pcgs_tasklet_info->websocket_instance, (char *)calloc(4096,1), 4096);
 					cgs_webrtc_create_instance(g_task_info.pcgs_webrtc, &pcgs_tasklet_info->webrtc_instance, event->context);
 					pcgs_tasklet_info->remote_description_set = false;
@@ -285,6 +287,10 @@ int main()
 
 				case CGS_EVENT_WEBSOCKET_DISCONNECTED:
 					cgs_webrtc_remove_from_conference(pcgs_tasklet_info->webrtc_instance, g_task_info.pcgs_webrtc_conference);
+					if (!cgs_webrtc_size_conference(g_task_info.pcgs_webrtc_conference)){
+						cgs_webrtc_destroy_conference(g_task_info.pcgs_webrtc_conference);
+						g_task_info.pcgs_webrtc_conference = NULL;
+					}
 					cgs_webrtc_destroy_instance(pcgs_tasklet_info->webrtc_instance);
 					cgs_websockets_instance_destroy(pcgs_tasklet_info->websocket_instance);
 					g_async_queue_unref(pcgs_tasklet_info->ice_candidate_queue);
@@ -405,8 +411,6 @@ int cgs_system_initialise(void) {
 	cgs_websockets_init(&g_task_info.pcgs_websockets, cgs_websockets_callback);
 
 	cgs_webrtc_init(&g_task_info.pcgs_webrtc, cgs_webrtc_callback);
-
-	cgs_webrtc_create_conference(g_task_info.pcgs_webrtc, &g_task_info.pcgs_webrtc_conference, NULL, NULL);
 
 	return 0;
 }
@@ -587,7 +591,6 @@ int cgs_webrtc_callback(cgs_webrtc* pcgs_webrtc, cgs_webrtc_instance* pcgs_webrt
 
 
 int cgs_system_deinitialise(void) {
-	cgs_webrtc_destroy_conference(g_task_info.pcgs_webrtc_conference);
 	cgs_webrtc_deinit(g_task_info.pcgs_webrtc);
 	cgs_websockets_deinit(g_task_info.pcgs_websockets);
 	g_hash_table_destroy(g_task_info.main_context_hash_table);
