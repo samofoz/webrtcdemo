@@ -76,7 +76,7 @@ int cgs_websockets_init(struct cgs_websockets** pcgs_websockets, cgs_websockets_
 	info.mounts = &mount;
 	info.protocols = protocols;
 	info.options = LWS_SERVER_OPTION_DISABLE_IPV6 | LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
-#if 1
+#if 0
 	info.ssl_cert_filepath = "demo.crt";
 	info.ssl_private_key_filepath = "demo.key";
 	info.ssl_ca_filepath = "demo.ca-bundle";

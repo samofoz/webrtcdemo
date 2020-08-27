@@ -3,7 +3,7 @@ var loadingParams = {
     isLoopback: false,
     warningMessages: [],
 
-    mediaConstraints: { "audio": true, "video": { "optional": [{ "minWidth": "1280" }, { "minHeight": "720" }], "mandatory": {} } },
+    mediaConstraints: { "audio": true, "video": { "optional": [{ "minWidth": "1280" }, { "minHeight": "720" }, { "frameRate": "60" }], "mandatory": {} } },
     offerOptions: {},
         peerConnectionConfig: { 
 

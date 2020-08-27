@@ -19,12 +19,13 @@
 
 #include "media_file_writer.h"
 #include "audio_mixer.h"
+#include "video_mixer.h"
 
 #define AV_CODEC_FLAG_GLOBAL_HEADER (1 << 22)
 #define CODEC_FLAG_GLOBAL_HEADER AV_CODEC_FLAG_GLOBAL_HEADER
 
 #define MAX_RESAMPLERS 5
-#define MAX_SWSCALERS 10
+#define MAX_SWSCALERS 5
 
 #define USE_AUDIO_FILTER 0
 #define USE_VIDEO_FILTER 0
@@ -68,8 +69,11 @@ struct resampler_t {
 };
 
 struct swscaler_t {
-    int width;
-    int height;
+    int in_width;
+    int in_height;
+    int out_width;
+    int out_height;
+    enum AVPixelFormat out_fmt;
     enum AVPixelFormat fmt;
     struct SwsContext* sws_context;
 };
@@ -95,6 +99,7 @@ struct file_writer_t {
     int out_height;
 
     struct audio_mixer_t* audio_mixer;
+    struct video_mixer_t* video_mixer;
 
     struct resampler_t resamplers[MAX_RESAMPLERS];
     struct swscaler_t swscalers[MAX_SWSCALERS];
@@ -102,6 +107,7 @@ struct file_writer_t {
     GPtrArray* fw_instances;
 
     int64_t next_audio_pts;
+    int64_t next_video_pts;
 };
 
 struct file_writer_event_queue_item_t {
@@ -146,6 +152,12 @@ struct file_writer_instance_t {
     struct swscaler_t swscalers[MAX_SWSCALERS];
 
     gint64 first_video_frame_time;
+    int64_t next_video_pts;
+    int mixer_x_pos;
+    int mixer_y_pos;
+    int mixer_width;
+    int mixer_height;
+
     int64_t next_audio_pts;
     int64_t next_audio_pts_for_mixer;
 
@@ -161,7 +173,7 @@ static int file_writer_close_for_instance(struct file_writer_instance_t* writer_
 static int init_audio_filters(struct file_writer_instance_t* file_writer, const char *filters_descr);
 static int init_video_filters(struct file_writer_instance_t* file_writer, const char *filters_descr, int out_width, int out_height);
 static int init_resampler(struct resampler_t* resampler, int64_t out_ch_layout, enum AVSampleFormat out_sample_fmt, int out_sample_rate);
-static int init_swscaler(struct file_writer_instance_t* file_writer, struct swscaler_t* swscaler, int in_w, int in_h);
+static int init_swscaler(struct swscaler_t* swscaler, int in_w, int in_h, int in_format, int out_w, int out_h, int out_format);
 static int write_audio_frame(struct file_writer_t* file_writer, AVFrame* frame, int* data_present);
 static int write_audio_frame_for_instance(struct file_writer_instance_t* file_writer, AVFrame* frame, int* data_present);
 static int write_video_frame(struct file_writer_t* file_writer, AVFrame* frame, int* data_present);
@@ -172,6 +184,7 @@ static gpointer cgs_file_writer_individual_recording_thread(gpointer context);
 
 static void main_loop_queue_item_free(gpointer data);
 static char* get_next_crn();
+static void ptr_array_resize(struct file_writer_t* file_writer);
 static int process_audio_frame(struct file_writer_t* file_writer, struct file_writer_instance_t* file_writer_instance, AVFrame* frame);
 static int process_audio_frame_for_instance(struct file_writer_instance_t* file_writer, AVFrame* frame);
 static int process_video_frame(struct file_writer_t* file_writer, struct file_writer_instance_t* file_writer_instance, AVFrame* frame);
@@ -259,7 +272,6 @@ int file_writer_create_context(struct file_writer_t* writer, struct file_writer_
     }
 
     (*writer_instance)->file_writer = writer;
-    g_ptr_array_add(writer->fw_instances, *writer_instance);
 
     /* Start the global thread if not already */
     (*writer_instance)->main_loop_queue = g_async_queue_new_full(main_loop_queue_item_free);
@@ -477,6 +489,12 @@ static int file_writer_open(struct file_writer_t* file_writer, const char* filen
         goto cleanup;
     }
 
+    /* Create the FIFO buffer based on the specified output sample format. */
+    if (error = video_mixer_alloc(&file_writer->video_mixer, file_writer->out_width, file_writer->out_height)) {
+        fprintf(stderr, "Could not allocate video mixer\n");
+        goto cleanup;
+    }
+
     printf("Ready to encode %s\n", filename);
     return 0;
 
@@ -488,6 +506,8 @@ cleanup:
     file_writer->format_ctx_out = NULL;
     if (file_writer->out_fifo)
         av_audio_fifo_free(file_writer->out_fifo);
+    if (file_writer->audio_mixer)
+        audio_mixer_free(file_writer->audio_mixer);
     return error;
 }
 
@@ -687,19 +707,22 @@ cleanup:
 
 
 
-static int init_swscaler(struct file_writer_instance_t *file_writer, struct swscaler_t* swscaler, int in_w, int in_h)
+static int init_swscaler(struct swscaler_t* swscaler, int in_w, int in_h, int in_format, int out_w, int out_h, int out_format)
 {
     struct SwsContext** sws_context = &swscaler->sws_context;
 
-    *sws_context = sws_getContext(in_w, in_h, AV_PIX_FMT_YUV420P, file_writer->out_width, file_writer->out_height, AV_PIX_FMT_YUV420P, SWS_BICUBIC, NULL, NULL, NULL);
+    *sws_context = sws_getContext(in_w, in_h, in_format, out_w, out_h, out_format, 0, NULL, NULL, NULL);
     if (!*sws_context) {
         fprintf(stderr, "Could not allocate sws context, sws_getContext() failed\n");
         return AVERROR(ENOMEM);
     }
 
-    swscaler->fmt = AV_PIX_FMT_YUV420P;
-    swscaler->width = in_w;
-    swscaler->height = in_h;
+    swscaler->in_width = in_w;
+    swscaler->in_height = in_h;
+    swscaler->fmt = in_format;
+    swscaler->out_width = out_w;
+    swscaler->out_height = out_h;
+    swscaler->out_fmt = out_format;
 
     return 0;
 }
@@ -790,7 +813,7 @@ static int write_audio_frame(struct file_writer_t* file_writer, AVFrame* frame, 
         file_writer->audio_frame_ct, pkt.size, pkt.pts, pkt.duration);
     file_writer->audio_frame_ct++;
 
-    ret = av_write_frame(file_writer->format_ctx_out, &pkt);
+    ret = av_interleaved_write_frame(file_writer->format_ctx_out, &pkt);
     if (ret < 0) {
         fprintf(stderr, "av_write_frame() for audio frame failed: %s\n", av_err2str(ret));
     }
@@ -988,9 +1011,11 @@ static int file_writer_close(struct file_writer_t* file_writer)
     if (file_writer->out_fifo)
         av_audio_fifo_free(file_writer->out_fifo);
 
-    /* Create the FIFO buffer based on the specified output sample format. */
     if (file_writer->audio_mixer)
         audio_mixer_free(file_writer->audio_mixer);
+
+    if (file_writer->video_mixer)
+        video_mixer_free(file_writer->video_mixer);
 
     printf("File write done for conference!\n");
     return 0;
@@ -1618,24 +1643,103 @@ exit:
 
 int process_video_frame(struct file_writer_t* file_writer, struct file_writer_instance_t* file_writer_instance, AVFrame* frame) {
     int ret = -1;
-    AVFrame* avframe = av_frame_alloc();
-    avframe->format = AV_PIX_FMT_YUV420P;
-    avframe->width = file_writer->out_width;
-    avframe->height = file_writer->out_height;
-    avframe->pts = frame->pts;
-    int numBytes = av_image_get_buffer_size(AV_PIX_FMT_YUV420P, avframe->width, avframe->height, 1);;
-    uint8_t* buffer = (uint8_t*)av_malloc(numBytes * sizeof(uint8_t));
+    struct swscaler_t swscaler;
 
-    ret = av_image_fill_arrays(avframe->data, avframe->linesize, buffer, AV_PIX_FMT_YUV420P, avframe->width, avframe->height, 1);
-    if (ret < 0) {
-        fprintf(stderr, "Could not allocate raw picture buffer\n");
+    if (file_writer->next_video_pts < file_writer_instance->next_video_pts) {
+        /* Allocate the output frame */
+        AVFrame* output_frame = NULL;
+        video_mixer_finish(file_writer->video_mixer, &output_frame);
+        if (output_frame) {
+            /* Allocate scaler */
+            ret = init_swscaler(&swscaler,
+                output_frame->width,
+                output_frame->height,
+                AV_PIX_FMT_RGB24,
+                output_frame->width,
+                output_frame->height,
+                AV_PIX_FMT_YUV420P);
+
+            if (!ret) {
+                AVFrame* avframe = av_frame_alloc();
+                avframe->format = AV_PIX_FMT_YUV420P;
+                avframe->width = output_frame->width;
+                avframe->height = output_frame->height;
+                ret = av_frame_get_buffer(avframe, 0);
+                if (ret < 0) {
+                    fprintf(stderr, "Could not allocate raw picture buffer\n");
+                }
+                else {
+                    ret = sws_scale(swscaler.sws_context, output_frame->data, output_frame->linesize, 0, output_frame->height, avframe->data, avframe->linesize);
+                    if (ret < 0) {
+                        printf("sws_scale() failed: [%s]\n", av_err2str(ret));
+                    }
+                    else {
+                        avframe->pts = file_writer->next_video_pts;
+                        write_video_frame(file_writer, avframe, NULL);
+                        file_writer->next_video_pts += 1000 / out_video_fps;
+                    }
+                }
+                av_frame_free(&avframe);
+                sws_freeContext(swscaler.sws_context);
+            }
+            else {
+                fprintf(stderr, "Could not allocate scaler\n");
+            }
+        }
+        video_mixer_start(file_writer->video_mixer);
+    }
+
+    /* Allocate scaler */
+    ret = init_swscaler(&swscaler,
+                        frame->width,
+                        frame->height,
+                        AV_PIX_FMT_YUV420P,
+                        file_writer_instance->mixer_width,
+                        file_writer_instance->mixer_height,
+                        AV_PIX_FMT_RGB24);
+
+    if (!ret) {
+        AVFrame* avframe = av_frame_alloc();
+        avframe->format = AV_PIX_FMT_RGB24;
+        avframe->width = file_writer_instance->mixer_width;
+        avframe->height = file_writer_instance->mixer_height;
+        avframe->pts = frame->pts;
+        ret = av_frame_get_buffer(avframe, 0);
+        if (ret < 0) {
+            fprintf(stderr, "Could not allocate raw picture buffer\n");
+        }
+        else {
+            ret = sws_scale(swscaler.sws_context, frame->data, frame->linesize, 0, frame->height, avframe->data, avframe->linesize);
+            if (ret < 0) {
+                fprintf(stderr, "sws_scale() failed: [%s]\n", av_err2str(ret));
+            }
+            else {
+                /* Mix frame */
+                struct border_t border;
+                border.width = 0;
+                border.radius = 0;
+                border.red = 0;
+                border.green = 0;
+                border.blue = 0;
+                video_mixer_add_frame(file_writer->video_mixer,
+                    avframe,
+                    file_writer_instance->mixer_x_pos,
+                    file_writer_instance->mixer_y_pos,
+                    border,
+                    file_writer_instance->mixer_width,
+                    file_writer_instance->mixer_height,
+                    object_fit_fill);
+                file_writer_instance->next_video_pts = avframe->pts + 1;
+            }
+        }
+        av_frame_free(&avframe);
+        sws_freeContext(swscaler.sws_context);
     }
     else {
-        write_video_frame(file_writer, avframe, NULL);
+        fprintf(stderr, "Could not allocate scaler\n");
     }
-    av_free(buffer);
-    av_frame_free(&avframe);
-    return ret;
+
+    return 0;
 }
 
 int process_video_frame_for_instance(struct file_writer_instance_t* file_writer, AVFrame *frame) {
@@ -1673,15 +1777,24 @@ end:
 #if USE_SWS
     int ret = -1, i;
 
-    /* Find\allocate resampler */
+    /* Find\allocate scaler */
     for (i = 0; i < MAX_SWSCALERS; ++i) {
         /* Find/allocate resampler */
         if (!file_writer->swscalers[i].sws_context) {
-            ret = init_swscaler(file_writer, &(file_writer->swscalers[i]), frame->width, frame->height);
+            ret = init_swscaler(&(file_writer->swscalers[i]), 
+                                    frame->width, 
+                                    frame->height, 
+                                    AV_PIX_FMT_YUV420P,
+                                    file_writer->file_writer->out_width,
+                                    file_writer->file_writer->out_height,
+                                    AV_PIX_FMT_YUV420P);
             break;
         }
-        else if (file_writer->swscalers[i].width == frame->width &&
-            file_writer->swscalers[i].height == frame->height &&
+        else if (file_writer->swscalers[i].in_width == frame->width &&
+            file_writer->swscalers[i].in_height == frame->height &&
+            file_writer->swscalers[i].out_width == file_writer->file_writer->out_width &&
+            file_writer->swscalers[i].out_height == file_writer->file_writer->out_height &&
+            file_writer->swscalers[i].out_fmt == AV_PIX_FMT_YUV420P &&
             file_writer->swscalers[i].fmt == frame->format) {
             ret = 0;
             break;
@@ -1749,6 +1862,25 @@ static char* get_next_crn()
     return str_crn;
 }
 
+static void ptr_array_resize(struct file_writer_t* file_writer) {
+    /* Resize video mixer frame */
+    for (unsigned i = 0; i < file_writer->fw_instances->len; ++i) {
+        struct file_writer_instance_t* file_writer_instance = g_ptr_array_index(file_writer->fw_instances, i);
+        if (file_writer->out_width > file_writer->out_height) {
+            file_writer_instance->mixer_x_pos = floor(i * ((double)file_writer->out_width / file_writer->fw_instances->len));
+            file_writer_instance->mixer_y_pos = 0;
+            file_writer_instance->mixer_width = file_writer->out_width / file_writer->fw_instances->len;
+            file_writer_instance->mixer_height = file_writer->out_height;
+        }
+        else {
+            file_writer_instance->mixer_x_pos = 0;
+            file_writer_instance->mixer_y_pos = floor(i * ((double)file_writer->out_height / file_writer->fw_instances->len));
+            file_writer_instance->mixer_width = file_writer->out_width;
+            file_writer_instance->mixer_height = file_writer->out_height / file_writer->fw_instances->len;
+        }
+    }
+}
+
 static gpointer cgs_file_writer_recording_thread(gpointer context)
 {
     struct file_writer_t* file_writer = (struct file_writer_t*)context;
@@ -1759,9 +1891,11 @@ static gpointer cgs_file_writer_recording_thread(gpointer context)
         if (event) {
             struct file_writer_instance_t* pfw = (struct file_writer_instance_t*)g_hash_table_lookup(file_writer->main_context_hash_table, event->context);
             if (pfw) {
-                printf("\n\nFILE WRITER[%s] Got event %d\n\n", event->context, event->event);
+                printf("\n\nBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBFILE WRITER[%s] Got event %d\n\n", event->context, event->event);
                 switch (event->event) {
                     case FILE_WRITER_EVENT_CREATED: {
+                        g_ptr_array_add(file_writer->fw_instances, pfw);
+                        ptr_array_resize(file_writer);
                         break;
                     }
                     case FILE_WRITER_EVENT_AUDIO_FRAME: {
@@ -1770,14 +1904,16 @@ static gpointer cgs_file_writer_recording_thread(gpointer context)
                         break;
                     }
                     case FILE_WRITER_EVENT_VIDEO_FRAME: {
-                        //process_video_frame(file_writer, pfw, (AVFrame*)event->in);
+                        process_video_frame(file_writer, pfw, (AVFrame*)event->in);
                         av_frame_free(&(AVFrame*)event->in);
                         break;
                     }
                     case FILE_WRITER_EVENT_DESTROYED: {
                         file_writer_close_for_instance(pfw);
                         g_hash_table_remove(file_writer->main_context_hash_table, event->context);
-                        g_ptr_array_remove(file_writer->fw_instances, event->context);
+                        g_ptr_array_remove(file_writer->fw_instances, pfw);
+                        ptr_array_resize(file_writer);
+
                         free(event->context);
                         free(pfw);
                         break;
@@ -1791,6 +1927,8 @@ static gpointer cgs_file_writer_recording_thread(gpointer context)
                 printf("\n\nStray event %d\n\n", event->event);
             }
             free(event);
+        } else {
+            printf("\n\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAANo event\n\n");
         }
     }
 

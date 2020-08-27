@@ -149,7 +149,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>C:\webrtc\webrtc-checkout\src; C:\webrtc\webrtc-checkout\src\third_party\abseil-cpp</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\webrtc\webrtc-checkout\src; C:\webrtc\webrtc-checkout\src\third_party\abseil-cpp; c:\Program Files\ImageMagick-7.0.10-Q16-HDRI\include</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
     <Link>
@@ -157,20 +157,28 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>c:\Program Files\ImageMagick-7.0.10-Q16-HDRI\lib</AdditionalLibraryDirectories>
+      <AdditionalDependencies>CORE_RL_MagickCore_.lib;CORE_RL_MagickWand_.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="audio_mixer.c" />
     <ClCompile Include="fake_audio_capture_module.cc" />
     <ClCompile Include="GoogleWebRTC.cpp" />
     <ClCompile Include="media_file_writer.c" />
+    <ClCompile Include="video_mixer.c" />
     <ClCompile Include="WebRTC_Server.cpp" />
     <ClCompile Include="Websockets.c" />
+    <ClCompile Include="yuv_rgb.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="audio_mixer.h" />
     <ClInclude Include="fake_audio_capture_module.h" />
     <ClInclude Include="GoogleWebRTC.h" />
     <ClInclude Include="media_file_writer.h" />
+    <ClInclude Include="video_mixer.h" />
     <ClInclude Include="Websockets.h" />
+    <ClInclude Include="yuv_rgb.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
