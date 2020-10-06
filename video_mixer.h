@@ -15,7 +15,8 @@ enum video_mixer_error_t {
 	CGS_VIDEO_MIXER_ERROR_NOMEM,
 	CGS_VIDEO_MIXER_ERROR_BAD_ARG,
 	CGS_VIDEO_MIXER_ERROR_THREAD_CREATE,
-	CGS_VIDEO_MIXER_ERROR_FFMPEG
+	CGS_VIDEO_MIXER_ERROR_THREAD_POOL,
+	CGS_VIDEO_MIXER_ERROR_NO_FRAME_ADDED
 };
 
 enum object_fit_t {
@@ -35,17 +36,41 @@ struct border_t {
 	uint8_t blue;
 };
 
-int video_mixer_alloc(struct video_mixer_t** video_mixer, int width, int height);
+enum video_mixer_event_code {
+	VIDEO_MIXER_EVENT_UNKNOWN,
+	VIDEO_MIXER_EVENT_ALLOCATED,
+	VIDEO_MIXER_EVENT_FREED,
+	VIDEO_MIXER_EVENT_JOB,
+	VIDEO_MIXER_EVENT_FRAME_READY
+};
+
+struct video_mixer_event {
+	enum video_mixer_event_code code;
+	void* in;
+};
+
+struct video_mixer_event_frame_ready_data {
+	int serial_number;
+	AVFrame *frame;
+};
+
+typedef int (*video_mixer_event_callback)(struct video_mixer_t* video_mixer, struct video_mixer_event* pevent, void* user_context);
+typedef int (*video_mixer_compare_func)(void* user_instance_context1, void* user_instance_context2);
+
+
+int video_mixer_alloc(struct video_mixer_t** video_mixer, int width, int height, video_mixer_event_callback callback, void* user_context);
 int video_mixer_start(struct video_mixer_t* video_mixer);
-int video_mixer_add_frame(struct video_mixer_t* video_mixer, 
+int video_mixer_add_frame(struct video_mixer_t* video_mixer,
 							AVFrame* input_frame,
 							size_t x_offset,
 							size_t y_offset,
 							struct border_t border,
 							size_t output_width,
 							size_t output_height,
-							enum object_fit_t object_fit);
-int video_mixer_finish(struct video_mixer_t* video_mixer, AVFrame** output_frame);
+							enum object_fit_t object_fit,
+							void* user_instance_context,
+							video_mixer_compare_func compare_func);
+int video_mixer_finish(struct video_mixer_t* video_mixer, int64_t pts);
 void video_mixer_free(struct video_mixer_t* video_mixer);
 
 #ifdef __cplusplus

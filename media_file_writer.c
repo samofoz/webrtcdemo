@@ -42,9 +42,6 @@ const int out_audio_format = AV_SAMPLE_FMT_FLTP;
 const int out_audio_num_channels = 1;
 const int64_t out_sample_rate = 48000;
 
-const char *video_filter_descr = "scale=1280:720";
-const char *audio_filter_descr = "aresample=48000,aformat=sample_fmts=s16:channel_layouts=mono";
-
 const AVRational global_time_base = { 1, 1000 };
 const int64_t out_video_fps = 30;
 
@@ -54,8 +51,17 @@ enum file_writer_event_t {
     FILE_WRITER_EVENT_CREATED,
     FILE_WRITER_EVENT_DESTROYED,
     FILE_WRITER_EVENT_FREED,
+    FILE_WRITER_EVENT_AUDIO_MIXER_FREED,
+    FILE_WRITER_EVENT_VIDEO_MIXER_FREED,
     FILE_WRITER_EVENT_AUDIO_FRAME,
-    FILE_WRITER_EVENT_VIDEO_FRAME
+    FILE_WRITER_EVENT_VIDEO_FRAME,
+    FILE_WRITER_EVENT_MIXED_AUDIO_FRAME,
+    FILE_WRITER_EVENT_MIXED_VIDEO_FRAME
+};
+
+struct file_writer_frame_t {
+    AVFrame* avframe;
+    gint64 current_time_us;
 };
 
 struct resampler_t {
@@ -108,6 +114,14 @@ struct file_writer_t {
 
     int64_t next_audio_pts;
     int64_t next_video_pts;
+
+    gint64 last_audio_frame_monotonic_time;
+    gint64 last_video_frame_monotonic_time;
+
+    GAsyncQueue* mixed_video_frame_queue;
+    int last_written_mixed_video_frame_serial_number;
+    GAsyncQueue* mixed_audio_frame_queue;
+    int last_written_mixed_audio_frame_serial_number;
 };
 
 struct file_writer_event_queue_item_t {
@@ -116,7 +130,11 @@ struct file_writer_event_queue_item_t {
     void* in;
 };
 
-
+struct file_writer_frame_ready_event_data_t {
+    enum file_writer_event_t event;
+    char* context;
+    void* in;
+};
 
 struct file_writer_instance_t {
     struct file_writer_t* file_writer;
@@ -152,26 +170,25 @@ struct file_writer_instance_t {
     struct swscaler_t swscalers[MAX_SWSCALERS];
 
     gint64 first_video_frame_time;
-    int64_t next_video_pts;
+    int64_t this_video_pts;
     int mixer_x_pos;
     int mixer_y_pos;
     int mixer_width;
     int mixer_height;
 
     int64_t next_audio_pts;
-    int64_t next_audio_pts_for_mixer;
 
     GThread* pgthread_rec;
     int exit;
     GAsyncQueue* main_loop_queue;
+
+    AVFrame *current_frame;
 };
 
 static int file_writer_open(struct file_writer_t* writer_instance, const char* filename, int out_width, int out_height);
 static int file_writer_open_for_instance(struct file_writer_instance_t* writer_instance, const char* filename, int out_width, int out_height);
 static int file_writer_close(struct file_writer_t* writer_instance);
 static int file_writer_close_for_instance(struct file_writer_instance_t* writer_instance);
-static int init_audio_filters(struct file_writer_instance_t* file_writer, const char *filters_descr);
-static int init_video_filters(struct file_writer_instance_t* file_writer, const char *filters_descr, int out_width, int out_height);
 static int init_resampler(struct resampler_t* resampler, int64_t out_ch_layout, enum AVSampleFormat out_sample_fmt, int out_sample_rate);
 static int init_swscaler(struct swscaler_t* swscaler, int in_w, int in_h, int in_format, int out_w, int out_h, int out_format);
 static int write_audio_frame(struct file_writer_t* file_writer, AVFrame* frame, int* data_present);
@@ -180,15 +197,18 @@ static int write_video_frame(struct file_writer_t* file_writer, AVFrame* frame, 
 static int write_video_frame_for_instance(struct file_writer_instance_t* file_writer, AVFrame* frame, int* data_present);
 
 static gpointer cgs_file_writer_recording_thread(gpointer context);
-static gpointer cgs_file_writer_individual_recording_thread(gpointer context);
+static gpointer cgs_file_writer_instance_recording_thread(gpointer context);
 
 static void main_loop_queue_item_free(gpointer data);
 static char* get_next_crn();
 static void ptr_array_resize(struct file_writer_t* file_writer);
-static int process_audio_frame(struct file_writer_t* file_writer, struct file_writer_instance_t* file_writer_instance, AVFrame* frame);
+static int process_audio_frame(struct file_writer_t* file_writer, struct file_writer_instance_t* file_writer_instance, AVFrame* frame, gint64 current_time_us);
 static int process_audio_frame_for_instance(struct file_writer_instance_t* file_writer, AVFrame* frame);
-static int process_video_frame(struct file_writer_t* file_writer, struct file_writer_instance_t* file_writer_instance, AVFrame* frame);
+static int process_video_frame(struct file_writer_t* file_writer, struct file_writer_instance_t* file_writer_instance, AVFrame* frame, gint64 current_time_us);
 static int process_video_frame_for_instance(struct file_writer_instance_t* file_writer, AVFrame* frame);
+
+int audio_mixer_callback(struct audio_mixer_t* audio_mixer, struct audio_mixer_event* pevent, void* user_context);
+int video_mixer_callback(struct video_mixer_t* video_mixer, struct video_mixer_event* pevent, void* user_context);
 
 
 int file_writer_alloc(struct file_writer_t** writer) {
@@ -201,7 +221,6 @@ int file_writer_alloc(struct file_writer_t** writer) {
         goto GET_OUT;
     }
 
-    /* Start the global thread if not already */
     (*writer)->main_loop_queue = g_async_queue_new_full(main_loop_queue_item_free);
     if (!(*writer)->main_loop_queue)
     {
@@ -224,6 +243,20 @@ int file_writer_alloc(struct file_writer_t** writer) {
 
     /* Create the file writer instances pointer array. */
     if (!((*writer)->fw_instances = g_ptr_array_new())) {
+        ret = CGS_FILE_WRITER_ERROR_NOMEM;
+        goto GET_OUT;
+    }
+
+    (*writer)->mixed_audio_frame_queue = g_async_queue_new_full(main_loop_queue_item_free);
+    if (!(*writer)->mixed_audio_frame_queue)
+    {
+        ret = CGS_FILE_WRITER_ERROR_NOMEM;
+        goto GET_OUT;
+    }
+
+    (*writer)->mixed_video_frame_queue = g_async_queue_new_full(main_loop_queue_item_free);
+    if (!(*writer)->mixed_video_frame_queue)
+    {
         ret = CGS_FILE_WRITER_ERROR_NOMEM;
         goto GET_OUT;
     }
@@ -254,6 +287,10 @@ GET_OUT:
             g_hash_table_destroy((*writer)->main_context_hash_table);
         if ((*writer)->out_fifo)
             av_audio_fifo_free((*writer)->out_fifo);
+        if ((*writer)->mixed_audio_frame_queue)
+            g_async_queue_unref((*writer)->mixed_audio_frame_queue);
+        if ((*writer)->mixed_video_frame_queue)
+            g_async_queue_unref((*writer)->mixed_video_frame_queue);
         free(*writer);
     }
     return (int)ret;
@@ -282,7 +319,7 @@ int file_writer_create_context(struct file_writer_t* writer, struct file_writer_
     }
 
     GError* error;
-    (*writer_instance)->pgthread_rec = g_thread_try_new("cgs_file_writer_individual_recording_thread", cgs_file_writer_individual_recording_thread, *writer_instance, &error);
+    (*writer_instance)->pgthread_rec = g_thread_try_new("cgs_file_writer_instance_recording_thread", cgs_file_writer_instance_recording_thread, *writer_instance, &error);
     if ((*writer_instance)->pgthread_rec == NULL) {
         ret = CGS_FILE_WRITER_ERROR_THREAD_CREATE;
         goto GET_OUT;
@@ -483,14 +520,12 @@ static int file_writer_open(struct file_writer_t* file_writer, const char* filen
         goto cleanup;
     }
 
-    /* Create the FIFO buffer based on the specified output sample format. */
-    if (error = audio_mixer_alloc(&file_writer->audio_mixer, file_writer->audio_ctx_out)) {
+    if (error = audio_mixer_alloc(&file_writer->audio_mixer, file_writer->audio_ctx_out, audio_mixer_callback, file_writer)) {
         fprintf(stderr, "Could not allocate audio mixer\n");
         goto cleanup;
     }
 
-    /* Create the FIFO buffer based on the specified output sample format. */
-    if (error = video_mixer_alloc(&file_writer->video_mixer, file_writer->out_width, file_writer->out_height)) {
+    if (error = video_mixer_alloc(&file_writer->video_mixer, file_writer->out_width, file_writer->out_height, video_mixer_callback, file_writer)) {
         fprintf(stderr, "Could not allocate video mixer\n");
         goto cleanup;
     }
@@ -509,6 +544,78 @@ cleanup:
     if (file_writer->audio_mixer)
         audio_mixer_free(file_writer->audio_mixer);
     return error;
+}
+
+int audio_mixer_callback(struct audio_mixer_t* audio_mixer, struct audio_mixer_event* pevent, void* user_context) {
+    struct file_writer_t* file_writer = (struct file_writer_t*)user_context;
+
+    switch (pevent->code) {
+    case AUDIO_MIXER_EVENT_FRAME_READY: {
+        /* Send this frame to the global thread for further processing and writing to the file */
+        struct file_writer_event_queue_item_t* event = (struct file_writer_event_queue_item_t*) calloc(1, sizeof(struct file_writer_event_queue_item_t));
+        if (!event) {
+            av_log(NULL, AV_LOG_ERROR, "Could not allocate FILE_WRITER_EVENT_AUDIO_FRAME event to be posted to the global thread\n");
+            return 2;
+        }
+
+        event->event = FILE_WRITER_EVENT_MIXED_AUDIO_FRAME;
+        event->in = pevent->in;
+        g_async_queue_push(file_writer->main_loop_queue, event);
+        break;
+    }
+    case AUDIO_MIXER_EVENT_FREED: {
+        /* Send this frame to the global thread for further processing and writing to the file */
+        struct file_writer_event_queue_item_t* event = (struct file_writer_event_queue_item_t*) calloc(1, sizeof(struct file_writer_event_queue_item_t));
+        if (!event) {
+            av_log(NULL, AV_LOG_ERROR, "Could not allocate FILE_WRITER_EVENT_AUDIO_FRAME event to be posted to the global thread\n");
+            return 2;
+        }
+
+        event->event = FILE_WRITER_EVENT_AUDIO_MIXER_FREED;
+        g_async_queue_push(file_writer->main_loop_queue, event);
+        break;
+    }
+    default:
+        break;
+    }
+
+    return 0;
+}
+
+int video_mixer_callback(struct video_mixer_t* video_mixer, struct video_mixer_event* pevent, void* user_context) {
+    struct file_writer_t* file_writer = (struct file_writer_t*)user_context;
+
+    switch (pevent->code) {
+        case VIDEO_MIXER_EVENT_FRAME_READY: {
+            /* Send this frame to the global thread for further processing and writing to the file */
+            struct file_writer_event_queue_item_t* event = (struct file_writer_event_queue_item_t*) calloc(1, sizeof(struct file_writer_event_queue_item_t));
+            if (!event) {
+                av_log(NULL, AV_LOG_ERROR, "Could not allocate FILE_WRITER_EVENT_AUDIO_FRAME event to be posted to the global thread\n");
+                return 2;
+            }
+
+            event->event = FILE_WRITER_EVENT_MIXED_VIDEO_FRAME;
+            event->in = pevent->in;
+            g_async_queue_push(file_writer->main_loop_queue, event);
+            break;
+        }
+        case VIDEO_MIXER_EVENT_FREED: {
+            /* Send this frame to the global thread for further processing and writing to the file */
+            struct file_writer_event_queue_item_t* event = (struct file_writer_event_queue_item_t*) calloc(1, sizeof(struct file_writer_event_queue_item_t));
+            if (!event) {
+                av_log(NULL, AV_LOG_ERROR, "Could not allocate FILE_WRITER_EVENT_AUDIO_FRAME event to be posted to the global thread\n");
+                return 2;
+            }
+
+            event->event = FILE_WRITER_EVENT_VIDEO_MIXER_FREED;
+            g_async_queue_push(file_writer->main_loop_queue, event);
+            break;
+        }
+        default:
+            break;
+    }
+
+    return 0;
 }
 
 static int file_writer_open_for_instance(struct file_writer_instance_t* file_writer, const char* filename, int out_width, int out_height)
@@ -777,11 +884,6 @@ static int write_audio_frame(struct file_writer_t* file_writer, AVFrame* frame, 
     pkt.data = NULL;
     pkt.size = 0;
 
-    if (frame) {
-        frame->pts = file_writer->next_audio_pts;
-        file_writer->next_audio_pts = frame->pts + frame->nb_samples;
-    }
-
     /* encode the frame */
     ret = avcodec_send_frame(file_writer->audio_ctx_out, frame);
     if (ret == AVERROR_EOF) {
@@ -905,6 +1007,7 @@ int file_writer_push_audio_data(struct file_writer_instance_t* file_writer,
 
     int ret = av_frame_get_buffer(frame, 1);
     if (ret < 0) {
+        av_frame_free(&frame);
         av_log(NULL, AV_LOG_ERROR, "av_frame_get_buffer() failed: %s\n", av_err2str(ret));
         return 2;
     }
@@ -917,11 +1020,23 @@ int file_writer_push_audio_data(struct file_writer_instance_t* file_writer,
         av_log(NULL, AV_LOG_ERROR, "Could not allocate FILE_WRITER_EVENT_AUDIO_FRAME event to be posted to the global thread\n");
         return 3;
     }
+    else {
+        struct file_writer_frame_t* pframe = (struct file_writer_frame_t*)calloc(1, sizeof(struct file_writer_frame_t));
+        if (!pframe) {
+            av_frame_free(&frame);
+            free(event);
+        }
+        else {
+            frame->pts = 0;
+            pframe->current_time_us = g_get_monotonic_time();
+            pframe->avframe = frame;
+            event->event = FILE_WRITER_EVENT_AUDIO_FRAME;
+            event->context = file_writer->crn;
+            event->in = (void*)pframe;
+            g_async_queue_push(file_writer->main_loop_queue, event);
+        }
+    }
 
-    event->event = FILE_WRITER_EVENT_AUDIO_FRAME;
-    event->context = file_writer->crn;
-    event->in = (void*)frame;
-    g_async_queue_push(file_writer->main_loop_queue, event);
 
     return 0;
 }
@@ -934,46 +1049,52 @@ int file_writer_push_video_frame(struct file_writer_instance_t* file_writer, int
         file_writer->first_video_frame_time = ts_us;
 
     AVFrame* avframe = av_frame_alloc();
-    avframe->width = w;
-    avframe->height = h;
-    avframe->format = AV_PIX_FMT_YUV420P;
+    if (avframe) {
+        avframe->width = w;
+        avframe->height = h;
+        avframe->format = AV_PIX_FMT_YUV420P;
 
-#if 0
-    int num_bytes = av_image_get_buffer_size(AV_PIX_FMT_YUV420P, avframe->width, avframe->height, 1);
-    uint8_t* buffer = (uint8_t*)av_malloc(num_bytes * sizeof(uint8_t));
+        avframe->linesize[0] = pitchY;
+        avframe->linesize[1] = pitchU;
+        avframe->linesize[2] = pitchV;
 
-    int ret = av_image_fill_arrays(avframe->data, avframe->linesize, buffer, AV_PIX_FMT_YUV420P, avframe->width, avframe->height, 1);
-    if (ret < 0) {
-        fprintf(stderr, "Could not allocate raw picture buffer\n");
-        av_frame_free(&avframe);
-        return 1;
+        avframe->data[0] = (uint8_t*)av_malloc((avframe->linesize[0] * avframe->height) + (avframe->linesize[1] * avframe->height / 2) + (avframe->linesize[2] * avframe->height / 2));
+        if (avframe->data[0] == NULL) {
+            av_frame_free(&avframe);
+        }
+        else {
+            avframe->data[1] = avframe->data[0] + (avframe->linesize[0] * avframe->height);
+            avframe->data[2] = avframe->data[1] + (avframe->linesize[1] * avframe->height / 2);
+            memcpy(avframe->data[0], (uint8_t*)y, avframe->linesize[0] * avframe->height);
+            memcpy(avframe->data[1], (uint8_t*)u, avframe->linesize[1] * avframe->height / 2);
+            memcpy(avframe->data[2], (uint8_t*)v, avframe->linesize[2] * avframe->height / 2);
+
+            avframe->pts = (ts_us - file_writer->first_video_frame_time) / 1000;
+
+            /* Send this frame to the global thread for further processing and writing to the file */
+            struct file_writer_event_queue_item_t* event = (struct file_writer_event_queue_item_t*) calloc(1, sizeof(struct file_writer_event_queue_item_t));
+            if (!event) {
+                av_log(NULL, AV_LOG_ERROR, "Could not allocate FILE_WRITER_EVENT_AUDIO_FRAME event to be posted to the global thread\n");
+                return 2;
+            }
+            else {
+                struct file_writer_frame_t* frame = (struct file_writer_frame_t*)calloc(1, sizeof(struct file_writer_frame_t));
+                if (!frame) {
+                    av_free(avframe->data[0]);
+                    av_frame_free(&avframe);
+                    free(event);
+                }
+                else {
+                    frame->current_time_us = g_get_monotonic_time();
+                    frame->avframe = avframe;
+                    event->event = FILE_WRITER_EVENT_VIDEO_FRAME;
+                    event->context = file_writer->crn;
+                    event->in = (void*)frame;
+                    g_async_queue_push(file_writer->main_loop_queue, event);
+                }
+            }
+        }
     }
-#else
-    avframe->linesize[0] = pitchY;
-    avframe->linesize[1] = pitchU;
-    avframe->linesize[2] = pitchV;
-
-    avframe->data[0] = (uint8_t*)av_malloc((avframe->linesize[0] * avframe->height) + (avframe->linesize[1] * avframe->height / 2) + (avframe->linesize[2] * avframe->height / 2));
-    avframe->data[1] = avframe->data[0] + (avframe->linesize[0] * avframe->height);
-    avframe->data[2] = avframe->data[1] + (avframe->linesize[1] * avframe->height / 2);
-#endif
-    memcpy(avframe->data[0], (uint8_t*)y, avframe->linesize[0] * avframe->height);
-    memcpy(avframe->data[1], (uint8_t*)u, avframe->linesize[1] * avframe->height / 2);
-    memcpy(avframe->data[2], (uint8_t*)v, avframe->linesize[2] * avframe->height / 2);
-
-    avframe->pts = (ts_us - file_writer->first_video_frame_time) / 1000;
-
-    /* Send this frame to the global thread for further processing and writing to the file */
-    struct file_writer_event_queue_item_t* event = (struct file_writer_event_queue_item_t*) calloc(1, sizeof(struct file_writer_event_queue_item_t));
-    if (!event) {
-        av_log(NULL, AV_LOG_ERROR, "Could not allocate FILE_WRITER_EVENT_AUDIO_FRAME event to be posted to the global thread\n");
-        return 2;
-    }
-
-    event->event = FILE_WRITER_EVENT_VIDEO_FRAME;
-    event->context = file_writer->crn;
-    event->in = (void*)avframe;
-    g_async_queue_push(file_writer->main_loop_queue, event);
     return 0;
 }
 
@@ -1010,12 +1131,6 @@ static int file_writer_close(struct file_writer_t* file_writer)
 
     if (file_writer->out_fifo)
         av_audio_fifo_free(file_writer->out_fifo);
-
-    if (file_writer->audio_mixer)
-        audio_mixer_free(file_writer->audio_mixer);
-
-    if (file_writer->video_mixer)
-        video_mixer_free(file_writer->video_mixer);
 
     printf("File write done for conference!\n");
     return 0;
@@ -1108,252 +1223,23 @@ void file_writer_free(struct file_writer_t* file_writer) {
     }
 }
 
-static int init_audio_filters(struct file_writer_instance_t* file_writer, const char* filters_descr)
-{
-    char args[512];
-    int ret = 0;
-    const AVFilter* abuffersrc = avfilter_get_by_name("abuffer");
-    const AVFilter* abuffersink = avfilter_get_by_name("abuffersink");
-    AVFilterInOut* outputs = avfilter_inout_alloc();
-    AVFilterInOut* inputs = avfilter_inout_alloc();
-    static enum AVSampleFormat out_sample_fmts[2];
-    out_sample_fmts[0] = out_audio_format;
-    out_sample_fmts[1] = -1;
-    static const int64_t out_channel_layouts[] = { AV_CH_LAYOUT_MONO, -1 };
-    static const int out_sample_rates[] = { 48000, -1 };
-    const AVFilterLink* outlink;
-    AVRational time_base = { 1, 1000000 };
-
-    file_writer->audio_filter_graph = avfilter_graph_alloc();
-    if (!outputs || !inputs || !file_writer->audio_filter_graph) {
-        ret = AVERROR(ENOMEM);
-        goto end;
-    }
-
-    /* buffer audio source: the decoded frames from the decoder will be inserted here. */
-    if (!file_writer->audio_ctx_out->channel_layout) {
-        file_writer->audio_ctx_out->channel_layout =
-            av_get_default_channel_layout(file_writer->audio_ctx_out->channels);
-    }
-    snprintf(args, sizeof(args),
-        "time_base=%d/%d:sample_rate=%d:sample_fmt=%s:channel_layout=0x%"PRIx64,
-        time_base.num, time_base.den,
-        file_writer->audio_ctx_out->sample_rate,
-        av_get_sample_fmt_name(AV_SAMPLE_FMT_S16),
-        file_writer->audio_ctx_out->channel_layout);
-    ret = avfilter_graph_create_filter(&file_writer->audio_buffersrc_ctx,
-        abuffersrc, "in",
-        args, NULL,
-        file_writer->audio_filter_graph);
-    if (ret < 0) {
-        av_log(NULL, AV_LOG_ERROR, "Cannot create audio buffer source\n");
-        goto end;
-    }
-
-    /* buffer audio sink: to terminate the filter chain. */
-    ret = avfilter_graph_create_filter(&file_writer->audio_buffersink_ctx,
-        abuffersink, "out",
-        NULL, NULL,
-        file_writer->audio_filter_graph);
-    if (ret < 0) {
-        av_log(NULL, AV_LOG_ERROR, "Cannot create audio buffer sink\n");
-        goto end;
-    }
 
 
-    ret = av_opt_set_int_list(file_writer->audio_buffersink_ctx,
-        "sample_fmts", out_sample_fmts, -1,
-        AV_OPT_SEARCH_CHILDREN);
-    if (ret < 0) {
-        av_log(NULL, AV_LOG_ERROR, "Cannot set output sample format\n");
-        goto end;
-    }
-
-    ret = av_opt_set_int_list(file_writer->audio_buffersink_ctx,
-        "channel_layouts", out_channel_layouts, -1,
-        AV_OPT_SEARCH_CHILDREN);
-    if (ret < 0) {
-        av_log(NULL, AV_LOG_ERROR, "Cannot set output channel layout\n");
-        goto end;
-    }
-
-    ret = av_opt_set_int_list(file_writer->audio_buffersink_ctx,
-        "sample_rates", out_sample_rates, -1,
-        AV_OPT_SEARCH_CHILDREN);
-    if (ret < 0) {
-        av_log(NULL, AV_LOG_ERROR, "Cannot set output sample rate\n");
-        goto end;
-    }
-
-
-    /*
-     * Set the endpoints for the filter graph. The filter_graph will
-     * be linked to the graph described by filters_descr.
-     */
-
-     /*
-      * The buffer source output must be connected to the input pad of
-      * the first filter described by filters_descr; since the first
-      * filter input label is not specified, it is set to "in" by
-      * default.
-      */
-    outputs->name = av_strdup("in");
-    outputs->filter_ctx = file_writer->audio_buffersrc_ctx;
-    outputs->pad_idx = 0;
-    outputs->next = NULL;
-
-    /*
-     * The buffer sink input must be connected to the output pad of
-     * the last filter described by filters_descr; since the last
-     * filter output label is not specified, it is set to "out" by
-     * default.
-     */
-    inputs->name = av_strdup("out");
-    inputs->filter_ctx = file_writer->audio_buffersink_ctx;
-    inputs->pad_idx = 0;
-    inputs->next = NULL;
-
-    if ((ret = avfilter_graph_parse_ptr(file_writer->audio_filter_graph,
-        filters_descr,
-        &inputs, &outputs, NULL)) < 0)
-        goto end;
-
-    if ((ret = avfilter_graph_config(file_writer->audio_filter_graph,
-        NULL)) < 0)
-        goto end;
-
-    /* Print summary of the sink buffer
-     * Note: args buffer is reused to store channel layout string */
-    outlink = file_writer->audio_buffersink_ctx->inputs[0];
-    av_get_channel_layout_string(args, sizeof(args), -1,
-        outlink->channel_layout);
-    av_log(NULL, AV_LOG_INFO, "Output: srate:%dHz fmt:%s chlayout:%s\n",
-        (int)outlink->sample_rate,
-        (char*)av_x_if_null(av_get_sample_fmt_name(outlink->format), "?"),
-        args);
-
-    printf("%s\n", avfilter_graph_dump(file_writer->audio_filter_graph, NULL));
-end:
-    avfilter_inout_free(&inputs);
-    avfilter_inout_free(&outputs);
-
-    return ret;
-}
-
-
-static int init_video_filters(struct file_writer_instance_t* file_writer, const char* filters_descr, int out_width, int out_height)
-{
-    char args[512];
-    int ret = 0;
-    const AVFilter* buffersrc = avfilter_get_by_name("buffer");
-    const AVFilter* buffersink = avfilter_get_by_name("buffersink");
-    AVFilterInOut* outputs = avfilter_inout_alloc();
-    AVFilterInOut* inputs = avfilter_inout_alloc();
-    //AVRational time_base = dec_ctx->time_base;
-    enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_YUV420P, AV_PIX_FMT_NONE };
-    AVRational out_aspect_ratio = { out_width , out_height };
-
-    file_writer->video_filter_graph = avfilter_graph_alloc();
-    if (!outputs || !inputs || !file_writer->video_filter_graph) {
-        ret = AVERROR(ENOMEM);
-        goto end;
-    }
-
-    /* buffer video source */
-    snprintf(args, sizeof(args),
-        "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
-        640,
-        360,
-        out_pix_format,
-        global_time_base.num, global_time_base.den,
-        16,
-        9);
-
-    ret = avfilter_graph_create_filter(&file_writer->video_buffersrc_ctx,
-        buffersrc, "in",
-        args, NULL,
-        file_writer->video_filter_graph);
-    if (ret < 0) {
-        av_log(NULL, AV_LOG_ERROR, "Cannot create buffer source\n");
-        goto end;
-    }
-
-    /* buffer video sink: to terminate the filter chain. */
-    ret = avfilter_graph_create_filter(&file_writer->video_buffersink_ctx,
-        buffersink, "out",
-        NULL, NULL,
-        file_writer->video_filter_graph);
-    if (ret < 0) {
-        av_log(NULL, AV_LOG_ERROR, "Cannot create buffer sink\n");
-        goto end;
-    }
-
-    /*
-        ret = av_opt_set_int_list(file_writer->video_buffersink_ctx,
-                                  "pix_fmts", pix_fmts,
-                                  AV_PIX_FMT_NONE, AV_OPT_SEARCH_CHILDREN);
-        if (ret < 0) {
-            av_log(NULL, AV_LOG_ERROR, "Cannot set output pixel format\n");
-            goto end;
-        }
-    */
-    /*
-     * Set the endpoints for the filter graph. The filter_graph will
-     * be linked to the graph described by filters_descr.
-     */
-
-     /*
-      * The buffer source output must be connected to the input pad of
-      * the first filter described by filters_descr; since the first
-      * filter input label is not specified, it is set to "in" by
-      * default.
-      */
-    outputs->name = av_strdup("in");
-    outputs->filter_ctx = file_writer->video_buffersrc_ctx;
-    outputs->pad_idx = 0;
-    outputs->next = NULL;
-
-    /*
-     * The buffer sink input must be connected to the output pad of
-     * the last filter described by filters_descr; since the last
-     * filter output label is not specified, it is set to "out" by
-     * default.
-     */
-    inputs->name = av_strdup("out");
-    inputs->filter_ctx = file_writer->video_buffersink_ctx;
-    inputs->pad_idx = 0;
-    inputs->next = NULL;
-
-    if ((ret = avfilter_graph_parse_ptr(file_writer->video_filter_graph,
-        filters_descr,
-        &inputs, &outputs, NULL)) < 0)
-        goto end;
-
-    if ((ret = avfilter_graph_config(file_writer->video_filter_graph,
-        NULL)) < 0)
-        goto end;
-
-    printf("%s\n", avfilter_graph_dump(file_writer->video_filter_graph, NULL));
-end:
-    avfilter_inout_free(&inputs);
-    avfilter_inout_free(&outputs);
-
-    return ret;
-}
-
-static int process_audio_frame(struct file_writer_t* file_writer, struct file_writer_instance_t* file_writer_instance, AVFrame* frame)
+static int process_audio_frame(struct file_writer_t* file_writer, struct file_writer_instance_t* file_writer_instance, AVFrame* frame, gint64 current_time_us)
 {
     int ret = -1; unsigned int i;
 
-    if (file_writer->next_audio_pts < file_writer_instance->next_audio_pts_for_mixer) {
-        AVFrame* output_frame = NULL;
-        audio_mixer_finish(file_writer->audio_mixer, &output_frame);
-        ret = write_audio_frame(file_writer, output_frame, NULL);
+    if (frame->pts == 0 && file_writer->last_audio_frame_monotonic_time == 0) {
+        file_writer->last_audio_frame_monotonic_time = current_time_us;
         audio_mixer_start(file_writer->audio_mixer);
-        if (ret) {
-            fprintf(stderr, "write_audio_frame() failed %s\n", av_err2str(ret));
-            goto exit;
-        }
+    }
+
+    int frame_duration = ((1000000 * file_writer->audio_ctx_out->frame_size) / file_writer->audio_ctx_out->sample_rate);
+    if ((current_time_us - file_writer->last_audio_frame_monotonic_time) >= frame_duration) {
+        file_writer->last_audio_frame_monotonic_time += frame_duration;
+        audio_mixer_finish(file_writer->audio_mixer, file_writer->next_audio_pts);
+        file_writer->next_audio_pts += file_writer->audio_ctx_out->frame_size;
+        audio_mixer_start(file_writer->audio_mixer);
     }
 
     /* Mix frame if required*/
@@ -1362,28 +1248,27 @@ static int process_audio_frame(struct file_writer_t* file_writer, struct file_wr
         AVFrame* input_frame = av_frame_alloc();
         if (!input_frame) {
             fprintf(stderr, "av_frame_alloc() failed\n");
-            ret = AVERROR(ENOMEM);
-            goto exit;
         }
-        input_frame->nb_samples = file_writer->audio_ctx_out->frame_size;
-        input_frame->channels = 1;
-        input_frame->channel_layout = av_get_default_channel_layout(input_frame->channels);
-        input_frame->format = AV_SAMPLE_FMT_S16;
-        input_frame->sample_rate = 48000;
-        input_frame->pts = file_writer_instance->next_audio_pts_for_mixer;
-        if ((ret = av_frame_get_buffer(input_frame, 0)) < 0) {
-            fprintf(stderr, "Could not allocate input frame samples (error '%s')\n", av_err2str(ret));
-            av_frame_free(&input_frame);
-            goto exit;
-        }
+        else {
+            input_frame->nb_samples = file_writer->audio_ctx_out->frame_size;
+            input_frame->channels = 1;
+            input_frame->channel_layout = av_get_default_channel_layout(input_frame->channels);
+            input_frame->format = AV_SAMPLE_FMT_S16;
+            input_frame->sample_rate = 48000;
+            if ((ret = av_frame_get_buffer(input_frame, 0)) < 0) {
+                fprintf(stderr, "Could not allocate input frame samples (error '%s')\n", av_err2str(ret));
+                av_frame_free(&input_frame);
+                goto exit;
+            }
 
-        /* Read one frame from the fifo */
-        ret = av_audio_fifo_read(file_writer_instance->in_fifo, (void**)input_frame->data, file_writer->audio_ctx_out->frame_size);
-        if (ret == file_writer->audio_ctx_out->frame_size) {
-            audio_mixer_add_frame(file_writer->audio_mixer, input_frame);
-            file_writer_instance->next_audio_pts_for_mixer += input_frame->nb_samples;
+            /* Read one frame from the fifo */
+            ret = av_audio_fifo_read(file_writer_instance->in_fifo, (void**)input_frame->data, file_writer->audio_ctx_out->frame_size);
+            if (ret == file_writer->audio_ctx_out->frame_size) {
+                audio_mixer_add_frame(file_writer->audio_mixer, input_frame);
+            } else {
+                av_frame_free(&input_frame);
+            }
         }
-        av_frame_free(&input_frame);
     }
 
     /* Find\allocate resampler */
@@ -1403,6 +1288,7 @@ static int process_audio_frame(struct file_writer_t* file_writer, struct file_wr
             break;
         }
     }
+    /* Convert these samples and add to the FIFO */
     if (!ret && i < MAX_RESAMPLERS) {
         AVFrame* avframe = av_frame_alloc();
         avframe->format = AV_SAMPLE_FMT_S16;
@@ -1434,7 +1320,7 @@ static int process_audio_frame(struct file_writer_t* file_writer, struct file_wr
         }
         av_frame_free(&avframe);
 
-        /* Fetch any remaining samples */
+        /* Fetch any remaining samples, and do the same */
         avframe = av_frame_alloc();
         avframe->format = AV_SAMPLE_FMT_S16;
         avframe->channels = 1;
@@ -1624,7 +1510,7 @@ static int process_audio_frame_for_instance(struct file_writer_instance_t* file_
 
         ret = write_audio_frame_for_instance(file_writer, output_frame, NULL);
         if (ret) {
-            fprintf(stderr, "write_audio_frame() failed %s\n", av_err2str(ret));
+            fprintf(stderr, "write_audio_frame_for_instance() failed %s\n", av_err2str(ret));
             av_frame_free(&output_frame);
             goto exit;
         }
@@ -1640,81 +1526,44 @@ exit:
 }
 
 
-
-int process_video_frame(struct file_writer_t* file_writer, struct file_writer_instance_t* file_writer_instance, AVFrame* frame) {
-    int ret = -1;
-    struct swscaler_t swscaler;
-
-    if (file_writer->next_video_pts < file_writer_instance->next_video_pts) {
-        /* Allocate the output frame */
-        AVFrame* output_frame = NULL;
-        video_mixer_finish(file_writer->video_mixer, &output_frame);
-        if (output_frame) {
-            /* Allocate scaler */
-            ret = init_swscaler(&swscaler,
-                output_frame->width,
-                output_frame->height,
-                AV_PIX_FMT_RGB24,
-                output_frame->width,
-                output_frame->height,
-                AV_PIX_FMT_YUV420P);
-
-            if (!ret) {
-                AVFrame* avframe = av_frame_alloc();
-                avframe->format = AV_PIX_FMT_YUV420P;
-                avframe->width = output_frame->width;
-                avframe->height = output_frame->height;
-                ret = av_frame_get_buffer(avframe, 0);
-                if (ret < 0) {
-                    fprintf(stderr, "Could not allocate raw picture buffer\n");
-                }
-                else {
-                    ret = sws_scale(swscaler.sws_context, output_frame->data, output_frame->linesize, 0, output_frame->height, avframe->data, avframe->linesize);
-                    if (ret < 0) {
-                        printf("sws_scale() failed: [%s]\n", av_err2str(ret));
-                    }
-                    else {
-                        avframe->pts = file_writer->next_video_pts;
-                        write_video_frame(file_writer, avframe, NULL);
-                        file_writer->next_video_pts += 1000 / out_video_fps;
-                    }
-                }
-                av_frame_free(&avframe);
-                sws_freeContext(swscaler.sws_context);
-            }
-            else {
-                fprintf(stderr, "Could not allocate scaler\n");
-            }
-        }
-        video_mixer_start(file_writer->video_mixer);
+static AVFrame* av_frame_duplicate(AVFrame* original) {
+    AVFrame* duplicate = av_frame_alloc();
+    if (duplicate) {
+        duplicate->format = original->format;
+        duplicate->width = original->width;
+        duplicate->height = original->height;
+        duplicate->linesize[0] = original->linesize[0];
+        duplicate->linesize[1] = original->linesize[1];
+        duplicate->linesize[2] = original->linesize[2];
+        duplicate->data[0] = (uint8_t*)av_malloc((original->linesize[0] * original->height) + (original->linesize[1] * original->height / 2) + (original->linesize[2] * original->height / 2));
+        duplicate->data[1] = duplicate->data[0] + (duplicate->linesize[0] * duplicate->height);
+        duplicate->data[2] = duplicate->data[1] + (duplicate->linesize[1] * duplicate->height / 2);
+        memcpy(duplicate->data[0], (uint8_t*)original->data[0], original->linesize[0] * original->height);
+        memcpy(duplicate->data[1], (uint8_t*)original->data[1], original->linesize[1] * original->height / 2);
+        memcpy(duplicate->data[2], (uint8_t*)original->data[2], original->linesize[2] * original->height / 2);
+        duplicate->pts = original->pts;
+        av_frame_copy_props(duplicate, original);
     }
+    return duplicate;
+}
 
-    /* Allocate scaler */
-    ret = init_swscaler(&swscaler,
-                        frame->width,
-                        frame->height,
-                        AV_PIX_FMT_YUV420P,
-                        file_writer_instance->mixer_width,
-                        file_writer_instance->mixer_height,
-                        AV_PIX_FMT_RGB24);
 
-    if (!ret) {
-        AVFrame* avframe = av_frame_alloc();
-        avframe->format = AV_PIX_FMT_RGB24;
-        avframe->width = file_writer_instance->mixer_width;
-        avframe->height = file_writer_instance->mixer_height;
-        avframe->pts = frame->pts;
-        ret = av_frame_get_buffer(avframe, 0);
-        if (ret < 0) {
-            fprintf(stderr, "Could not allocate raw picture buffer\n");
-        }
-        else {
-            ret = sws_scale(swscaler.sws_context, frame->data, frame->linesize, 0, frame->height, avframe->data, avframe->linesize);
-            if (ret < 0) {
-                fprintf(stderr, "sws_scale() failed: [%s]\n", av_err2str(ret));
-            }
-            else {
-                /* Mix frame */
+int compare_instance_context(void* context1, void* context2) {
+    struct file_writer_instance_t* file_writer_instance1 = (struct file_writer_instance_t*)context1;
+    struct file_writer_instance_t* file_writer_instance2 = (struct file_writer_instance_t*)context2;
+
+    return g_strcmp0(file_writer_instance1->crn, file_writer_instance2->crn);
+}
+
+
+int process_video_frame(struct file_writer_t* file_writer, struct file_writer_instance_t* file_writer_instance, AVFrame* frame, gint64 current_time_us) {
+    if (frame->pts == 0 && file_writer->last_video_frame_monotonic_time == 0) {
+        file_writer->last_video_frame_monotonic_time = current_time_us;
+        video_mixer_start(file_writer->video_mixer); /* Start a new job */
+        for (unsigned i = 0; i < file_writer->fw_instances->len; ++i) {
+            struct file_writer_instance_t* file_writer_instance = g_ptr_array_index(file_writer->fw_instances, i);
+            if (file_writer_instance->current_frame) {
+                AVFrame* current_frame = av_frame_duplicate(file_writer_instance->current_frame);
                 struct border_t border;
                 border.width = 0;
                 border.radius = 0;
@@ -1722,23 +1571,75 @@ int process_video_frame(struct file_writer_t* file_writer, struct file_writer_in
                 border.green = 0;
                 border.blue = 0;
                 video_mixer_add_frame(file_writer->video_mixer,
-                    avframe,
+                    current_frame,
                     file_writer_instance->mixer_x_pos,
                     file_writer_instance->mixer_y_pos,
                     border,
                     file_writer_instance->mixer_width,
                     file_writer_instance->mixer_height,
-                    object_fit_fill);
-                file_writer_instance->next_video_pts = avframe->pts + 1;
+                    object_fit_cover, 
+                    file_writer_instance, 
+                    compare_instance_context);
             }
         }
-        av_frame_free(&avframe);
-        sws_freeContext(swscaler.sws_context);
-    }
-    else {
-        fprintf(stderr, "Could not allocate scaler\n");
     }
 
+    int frame_duration = 1000000 / out_video_fps;
+    if ((current_time_us - file_writer->last_video_frame_monotonic_time) >= frame_duration) {
+        /* Push the clock back by the difference of time elapsed and per frame time */
+        file_writer->last_video_frame_monotonic_time += frame_duration;
+
+        /* We are past the next mixed frame, so finish this job */
+        video_mixer_finish(file_writer->video_mixer, file_writer->next_video_pts);
+        file_writer->next_video_pts += (1000 / out_video_fps);
+        video_mixer_start(file_writer->video_mixer);
+        for (unsigned i = 0; i < file_writer->fw_instances->len; ++i) {
+            struct file_writer_instance_t* file_writer_instance = g_ptr_array_index(file_writer->fw_instances, i);
+            if (file_writer_instance->current_frame) {
+                AVFrame* current_frame = av_frame_duplicate(file_writer_instance->current_frame);
+                struct border_t border;
+                border.width = 0;
+                border.radius = 0;
+                border.red = 0;
+                border.green = 0;
+                border.blue = 0;
+                video_mixer_add_frame(file_writer->video_mixer,
+                    current_frame,
+                    file_writer_instance->mixer_x_pos,
+                    file_writer_instance->mixer_y_pos,
+                    border,
+                    file_writer_instance->mixer_width,
+                    file_writer_instance->mixer_height,
+                    object_fit_cover,
+                    file_writer_instance,
+                    compare_instance_context);
+            }
+        }
+    }
+
+    /* Mix frame */
+    struct border_t border;
+    border.width = 0;
+    border.radius = 0;
+    border.red = 0;
+    border.green = 0;
+    border.blue = 0;
+    video_mixer_add_frame(file_writer->video_mixer,
+                            frame,
+                            file_writer_instance->mixer_x_pos,
+                            file_writer_instance->mixer_y_pos,
+                            border,
+                            file_writer_instance->mixer_width,
+                            file_writer_instance->mixer_height,
+                            object_fit_cover,
+                            file_writer_instance,
+                            compare_instance_context);
+    
+    if (file_writer_instance->current_frame) {
+        av_free(file_writer_instance->current_frame->data[0]);
+        av_frame_free(&file_writer_instance->current_frame);
+    }
+    file_writer_instance->current_frame = av_frame_duplicate(frame);
     return 0;
 }
 
@@ -1881,6 +1782,29 @@ static void ptr_array_resize(struct file_writer_t* file_writer) {
     }
 }
 
+gint compare_audio_frames(gconstpointer a, gconstpointer b, gpointer user_data) {
+    struct audio_mixer_event_frame_ready_data* data_a = (struct audio_mixer_event_frame_ready_data*)a;
+    struct audio_mixer_event_frame_ready_data* data_b = (struct audio_mixer_event_frame_ready_data*)b;
+
+    if (data_a->serial_number < data_b->serial_number)
+        return -1;
+    else if (data_a->serial_number > data_b->serial_number)
+        return 1;
+    else
+        return 0;
+}
+gint compare_video_frames(gconstpointer a, gconstpointer b, gpointer user_data) {
+    struct video_mixer_event_frame_ready_data* data_a = (struct video_mixer_event_frame_ready_data*)a;
+    struct video_mixer_event_frame_ready_data* data_b = (struct video_mixer_event_frame_ready_data*)b;
+
+    if (data_a->serial_number < data_b->serial_number)
+        return -1;
+    else if (data_a->serial_number > data_b->serial_number)
+        return 1;
+    else
+        return 0;
+}
+
 static gpointer cgs_file_writer_recording_thread(gpointer context)
 {
     struct file_writer_t* file_writer = (struct file_writer_t*)context;
@@ -1889,42 +1813,83 @@ static gpointer cgs_file_writer_recording_thread(gpointer context)
     while (!file_writer->exit) {
         struct file_writer_event_queue_item_t* event = (struct file_writer_event_queue_item_t*)g_async_queue_timeout_pop(file_writer->main_loop_queue, 1000000);
         if (event) {
-            struct file_writer_instance_t* pfw = (struct file_writer_instance_t*)g_hash_table_lookup(file_writer->main_context_hash_table, event->context);
-            if (pfw) {
-                printf("\n\nBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBFILE WRITER[%s] Got event %d\n\n", event->context, event->event);
-                switch (event->event) {
-                    case FILE_WRITER_EVENT_CREATED: {
-                        g_ptr_array_add(file_writer->fw_instances, pfw);
-                        ptr_array_resize(file_writer);
-                        break;
+            switch (event->event) {
+                case FILE_WRITER_EVENT_FREED:
+                    audio_mixer_free(file_writer->audio_mixer);
+                    break;
+                case FILE_WRITER_EVENT_AUDIO_MIXER_FREED:
+                    video_mixer_free(file_writer->video_mixer);
+                    break;
+                case FILE_WRITER_EVENT_VIDEO_MIXER_FREED:
+                    printf("\n\nFILE WRITER[%s] Got event %d\n\n", event->context, event->event);
+                    file_writer->exit = 1;
+                    break;
+                case FILE_WRITER_EVENT_MIXED_AUDIO_FRAME: {
+                    struct audio_mixer_event_frame_ready_data* data = (struct audio_mixer_event_frame_ready_data*)event->in;
+                    printf("\n\nFILE WRITER[%s] Got audio frame %d\n\n", event->context, data->serial_number);
+                    while (data && (file_writer->last_written_mixed_audio_frame_serial_number + 1 == data->serial_number)) {
+                        write_audio_frame(file_writer, data->frame, NULL);
+                        ++(file_writer->last_written_mixed_audio_frame_serial_number);
+                        av_frame_free(&data->frame);
+                        free(data);
+                        data = g_async_queue_try_pop(file_writer->mixed_audio_frame_queue);
                     }
-                    case FILE_WRITER_EVENT_AUDIO_FRAME: {
-                        process_audio_frame(file_writer, pfw, (AVFrame*)event->in);
-                        av_frame_free(&(AVFrame*)event->in);
-                        break;
-                    }
-                    case FILE_WRITER_EVENT_VIDEO_FRAME: {
-                        process_video_frame(file_writer, pfw, (AVFrame*)event->in);
-                        av_frame_free(&(AVFrame*)event->in);
-                        break;
-                    }
-                    case FILE_WRITER_EVENT_DESTROYED: {
-                        file_writer_close_for_instance(pfw);
-                        g_hash_table_remove(file_writer->main_context_hash_table, event->context);
-                        g_ptr_array_remove(file_writer->fw_instances, pfw);
-                        ptr_array_resize(file_writer);
-
-                        free(event->context);
-                        free(pfw);
-                        break;
-                    }
+                    if (data)
+                        g_async_queue_push_sorted(file_writer->mixed_audio_frame_queue, data, compare_audio_frames, file_writer);
+                    break;
                 }
-            }
-            else if (event->event == FILE_WRITER_EVENT_FREED) {
-                printf("\n\nFILE WRITER[%s] Got event %d\n\n", event->context, event->event);
-                file_writer->exit = 1;
-            } else {
-                printf("\n\nStray event %d\n\n", event->event);
+                case FILE_WRITER_EVENT_MIXED_VIDEO_FRAME: {
+                    struct video_mixer_event_frame_ready_data* data = (struct video_mixer_event_frame_ready_data*)event->in;
+                    printf("\n\nFILE WRITER[%s] Got video frame %d\n\n", event->context, data->serial_number);
+                    while (data && (file_writer->last_written_mixed_video_frame_serial_number + 1 == data->serial_number)) {
+                        write_video_frame(file_writer, data->frame, NULL);
+                        ++(file_writer->last_written_mixed_video_frame_serial_number);
+                        av_frame_free(&data->frame);
+                        free(data);
+                        data = g_async_queue_try_pop(file_writer->mixed_video_frame_queue);
+                    }
+                    if(data)
+                        g_async_queue_push_sorted(file_writer->mixed_video_frame_queue, data, compare_video_frames, file_writer);
+                    break;
+                }
+                default: {
+                    struct file_writer_instance_t* pfw = (struct file_writer_instance_t*)g_hash_table_lookup(file_writer->main_context_hash_table, event->context);
+                    if (pfw) {
+                        printf("\n\nBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBFILE WRITER[%s] Got event %d\n\n", event->context, event->event);
+                        switch (event->event) {
+                            case FILE_WRITER_EVENT_CREATED: {
+                                g_ptr_array_add(file_writer->fw_instances, pfw);
+                                ptr_array_resize(file_writer);
+                                break;
+                            }
+                            case FILE_WRITER_EVENT_AUDIO_FRAME: {
+                                process_audio_frame(file_writer, pfw, ((struct file_writer_frame_t*)event->in)->avframe, ((struct file_writer_frame_t*)event->in)->current_time_us);
+                                free(event->in);
+                                break;
+                            }
+                            case FILE_WRITER_EVENT_VIDEO_FRAME: {
+                                process_video_frame(file_writer, pfw, ((struct file_writer_frame_t*)event->in)->avframe, ((struct file_writer_frame_t*)event->in)->current_time_us);
+                                free(event->in);
+                                break;
+                            }
+                            case FILE_WRITER_EVENT_DESTROYED: {
+                                file_writer_close_for_instance(pfw);
+                                g_hash_table_remove(file_writer->main_context_hash_table, event->context);
+                                g_ptr_array_remove(file_writer->fw_instances, pfw);
+                                ptr_array_resize(file_writer);
+
+                                free(event->context);
+                                free(pfw);
+                                break;
+                            }
+                            default:
+                                break;
+                        }
+                    } else {
+                        printf("\n\nBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBStray event %d\n\n", event->event);
+                    }
+                    break;
+                }
             }
             free(event);
         } else {
@@ -1936,6 +1901,8 @@ static gpointer cgs_file_writer_recording_thread(gpointer context)
     g_async_queue_unref(file_writer->main_loop_queue);
     g_hash_table_destroy(file_writer->main_context_hash_table);
     g_ptr_array_free(file_writer->fw_instances, TRUE);
+    g_async_queue_unref(file_writer->mixed_audio_frame_queue);
+    g_async_queue_unref(file_writer->mixed_video_frame_queue);
     free(file_writer);
     int retval;
     g_thread_exit(&retval);
@@ -1945,7 +1912,7 @@ static gpointer cgs_file_writer_recording_thread(gpointer context)
 
 
 
-static gpointer cgs_file_writer_individual_recording_thread(gpointer context)
+static gpointer cgs_file_writer_instance_recording_thread(gpointer context)
 {
     struct file_writer_instance_t* file_writer = (struct file_writer_instance_t*)context;
 
@@ -1956,11 +1923,11 @@ static gpointer cgs_file_writer_individual_recording_thread(gpointer context)
             printf("\n\nFILE WRITER INSTANCE[%s] Got event %d\n\n", event->context, event->event);
             switch (event->event) {
                 case FILE_WRITER_EVENT_AUDIO_FRAME: {
-                    process_audio_frame_for_instance(file_writer, (AVFrame*)event->in);
+                    //process_audio_frame_for_instance(file_writer, ((struct file_writer_frame_t*)event->in)->avframe);
                     break;
                 }
                 case FILE_WRITER_EVENT_VIDEO_FRAME: {
-                    process_video_frame_for_instance(file_writer, (AVFrame*)event->in);
+                    //process_video_frame_for_instance(file_writer, ((struct file_writer_frame_t*)event->in)->avframe);
                     break;
                 }
                 case FILE_WRITER_EVENT_DESTROYED: {
@@ -2015,8 +1982,7 @@ static int write_video_frame(struct file_writer_t* file_writer, AVFrame* frame, 
     pkt.stream_index = file_writer->video_stream->index;
 
     /* Write the compressed frame to the media file. */
-    printf("Write video frame %lld, size=%d pts=%lld\n",
-        file_writer->video_frame_ct, pkt.size, pkt.pts);
+    printf("Write video frame %lld, size=%d pts=%lld\n", file_writer->video_frame_ct, pkt.size, frame->pts);
     file_writer->video_frame_ct++;
     ret = av_interleaved_write_frame(file_writer->format_ctx_out, &pkt);
     av_packet_unref(&pkt);

@@ -169,7 +169,6 @@
     <ClCompile Include="video_mixer.c" />
     <ClCompile Include="WebRTC_Server.cpp" />
     <ClCompile Include="Websockets.c" />
-    <ClCompile Include="yuv_rgb.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="audio_mixer.h" />
@@ -178,7 +177,6 @@
     <ClInclude Include="media_file_writer.h" />
     <ClInclude Include="video_mixer.h" />
     <ClInclude Include="Websockets.h" />
-    <ClInclude Include="yuv_rgb.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

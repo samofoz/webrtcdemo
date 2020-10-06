@@ -211,8 +211,6 @@ public:
 						int sample_rate,
 						size_t number_of_channels,
 						size_t number_of_frames) {
-		//return;
-		printf("\n\ncgs_webrtc_audio_track_sink::OnData(bits_per_sample : %d, sample_rate : %d, number_of_channels : %d, number_of_frames : %d)\n\n", bits_per_sample, sample_rate, number_of_channels, number_of_frames);
 		file_writer_push_audio_data(pcgs_webrtc_instance_->pmedia_file_writer_instance, audio_data, bits_per_sample, sample_rate, number_of_channels, number_of_frames);
 	}
 };
@@ -231,8 +229,6 @@ public:
 
 	// VideoSinkInterface implementation
 	void OnFrame(const webrtc::VideoFrame& frame) override {
-		printf("\n\ncgs_webrtc_video_track_sink::OnFrame(frame.height = %d, frame.width = %d, frame.type = %d)\n\n", frame.video_frame_buffer()->height(), frame.video_frame_buffer()->width(), frame.video_frame_buffer()->type());
-
 		const webrtc::I420BufferInterface* i420 = frame.video_frame_buffer()->GetI420();
 		uint8_t* y = (uint8_t*)i420->DataY();
 		uint8_t* u = (uint8_t*)i420->DataU();

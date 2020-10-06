@@ -36,9 +36,6 @@
     <ClCompile Include="video_mixer.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="yuv_rgb.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Websockets.h">
@@ -57,9 +54,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="video_mixer.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="yuv_rgb.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
