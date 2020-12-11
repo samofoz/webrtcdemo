@@ -90,8 +90,8 @@ int video_mixer_alloc(struct video_mixer_t** video_mixer, int width, int height,
 
     GError* error;
     (*video_mixer)->pgthread_pool = g_thread_pool_new(video_mixer_do_mix_job, *video_mixer, 
-#if 0
-                                                        g_get_num_processors(),
+#if 1
+                                                        g_get_num_processors() / 2,
 #else
                                                         1,
 #endif

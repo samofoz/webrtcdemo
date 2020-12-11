@@ -1218,7 +1218,6 @@ void file_writer_free(struct file_writer_t* file_writer) {
     struct file_writer_event_queue_item_t* event = (struct file_writer_event_queue_item_t*) calloc(1, sizeof(struct file_writer_event_queue_item_t));
     if (event) {
         event->event = FILE_WRITER_EVENT_FREED;
-        g_usleep(1000000);
         g_async_queue_push(file_writer->main_loop_queue, event);
     }
 }
@@ -1828,28 +1827,34 @@ static gpointer cgs_file_writer_recording_thread(gpointer context)
                     struct audio_mixer_event_frame_ready_data* data = (struct audio_mixer_event_frame_ready_data*)event->in;
                     printf("\n\nFILE WRITER[%s] Got audio frame %d\n\n", event->context, data->serial_number);
                     while (data && (file_writer->last_written_mixed_audio_frame_serial_number + 1 == data->serial_number)) {
+                        printf("FILE WRITER write audio frame %d...\n", data->serial_number);
                         write_audio_frame(file_writer, data->frame, NULL);
                         ++(file_writer->last_written_mixed_audio_frame_serial_number);
                         av_frame_free(&data->frame);
                         free(data);
                         data = g_async_queue_try_pop(file_writer->mixed_audio_frame_queue);
                     }
-                    if (data)
+                    if (data) {
+                        printf("FILE WRITER Waiting for audio frame %d. Buffered\n", file_writer->last_written_mixed_audio_frame_serial_number + 1);
                         g_async_queue_push_sorted(file_writer->mixed_audio_frame_queue, data, compare_audio_frames, file_writer);
+                    }
                     break;
                 }
                 case FILE_WRITER_EVENT_MIXED_VIDEO_FRAME: {
                     struct video_mixer_event_frame_ready_data* data = (struct video_mixer_event_frame_ready_data*)event->in;
                     printf("\n\nFILE WRITER[%s] Got video frame %d\n\n", event->context, data->serial_number);
                     while (data && (file_writer->last_written_mixed_video_frame_serial_number + 1 == data->serial_number)) {
+                        printf("FILE WRITER write video frame %d...\n", data->serial_number);
                         write_video_frame(file_writer, data->frame, NULL);
                         ++(file_writer->last_written_mixed_video_frame_serial_number);
                         av_frame_free(&data->frame);
                         free(data);
                         data = g_async_queue_try_pop(file_writer->mixed_video_frame_queue);
                     }
-                    if(data)
+                    if (data) {
+                        printf("FILE WRITER Waiting for video frame %d. Buffered\n", file_writer->last_written_mixed_video_frame_serial_number + 1);
                         g_async_queue_push_sorted(file_writer->mixed_video_frame_queue, data, compare_video_frames, file_writer);
+                    }
                     break;
                 }
                 default: {
@@ -1874,10 +1879,10 @@ static gpointer cgs_file_writer_recording_thread(gpointer context)
                             }
                             case FILE_WRITER_EVENT_DESTROYED: {
                                 file_writer_close_for_instance(pfw);
+                                g_async_queue_unref(pfw->main_loop_queue);
                                 g_hash_table_remove(file_writer->main_context_hash_table, event->context);
                                 g_ptr_array_remove(file_writer->fw_instances, pfw);
                                 ptr_array_resize(file_writer);
-
                                 free(event->context);
                                 free(pfw);
                                 break;
@@ -1897,6 +1902,22 @@ static gpointer cgs_file_writer_recording_thread(gpointer context)
         }
     }
 
+    g_async_queue_sort(file_writer->mixed_audio_frame_queue, compare_audio_frames, (gpointer)0);
+    struct audio_mixer_event_frame_ready_data* data = g_async_queue_try_pop(file_writer->mixed_audio_frame_queue);
+    while (data) {
+        write_audio_frame(file_writer, data->frame, NULL);
+        av_frame_free(&data->frame);
+        free(data);
+        data = g_async_queue_try_pop(file_writer->mixed_audio_frame_queue);
+    }
+    g_async_queue_sort(file_writer->mixed_video_frame_queue, compare_video_frames, (gpointer)0);
+    struct video_mixer_event_frame_ready_data* data1 = g_async_queue_try_pop(file_writer->mixed_video_frame_queue);\
+    while (data1) {
+        write_video_frame(file_writer, data1->frame, NULL);
+        av_frame_free(&data1->frame);
+        free(data1);
+        data1 = g_async_queue_try_pop(file_writer->mixed_video_frame_queue);
+    }
     file_writer_close(file_writer);
     g_async_queue_unref(file_writer->main_loop_queue);
     g_hash_table_destroy(file_writer->main_context_hash_table);
@@ -1982,7 +2003,7 @@ static int write_video_frame(struct file_writer_t* file_writer, AVFrame* frame, 
     pkt.stream_index = file_writer->video_stream->index;
 
     /* Write the compressed frame to the media file. */
-    printf("Write video frame %lld, size=%d pts=%lld\n", file_writer->video_frame_ct, pkt.size, frame->pts);
+    printf("Write video frame %lld, size=%d pts=%lld\n", file_writer->video_frame_ct, pkt.size, pkt.pts);
     file_writer->video_frame_ct++;
     ret = av_interleaved_write_frame(file_writer->format_ctx_out, &pkt);
     av_packet_unref(&pkt);

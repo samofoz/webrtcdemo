@@ -78,8 +78,8 @@ int audio_mixer_alloc(struct audio_mixer_t** audio_mixer, AVCodecContext* audio_
 
     GError* error;
     (*audio_mixer)->pgthread_pool = g_thread_pool_new(audio_mixer_do_mix_job, *audio_mixer, 
-#if 0
-                                                        g_get_num_processors(), 
+#if 1
+                                                        g_get_num_processors() / 2, 
 #else
                                                         1,
 #endif
@@ -164,7 +164,7 @@ int audio_mixer_finish(struct audio_mixer_t* audio_mixer, int64_t pts) {
 
     printf("audio_mixer_finish(%d)\n", pts);
     audio_mixer->current_job->pts = pts;
-    printf("\n\nVideo mixer, Got audio frame %d\n\n", audio_mixer->current_job->serial_number);
+    printf("\n\nAudio mixer, Got audio frame %d\n\n", audio_mixer->current_job->serial_number);
     struct audio_mixer_event* event = (struct audio_mixer_event*) calloc(1, sizeof(struct audio_mixer_event));
     if (event) {
         event->code = AUDIO_MIXER_EVENT_JOB;
