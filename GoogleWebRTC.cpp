@@ -38,7 +38,10 @@
 
 //#include "third_party/blink/renderer/modules/mediarecorder/media_recorder.h"
 
+extern "C" {
 #include "media_file_writer.h"
+}
+
 #include "fake_audio_capture_module.h"
 
 #ifdef _DEBUG
@@ -211,7 +214,8 @@ public:
 						int sample_rate,
 						size_t number_of_channels,
 						size_t number_of_frames) {
-		file_writer_push_audio_data(pcgs_webrtc_instance_->pmedia_file_writer_instance, audio_data, bits_per_sample, sample_rate, number_of_channels, number_of_frames);
+		if(pcgs_webrtc_instance_->pmedia_file_writer_instance)
+			file_writer_push_audio_data(pcgs_webrtc_instance_->pmedia_file_writer_instance, audio_data, bits_per_sample, sample_rate, number_of_channels, number_of_frames);
 	}
 };
 
@@ -238,7 +242,8 @@ public:
 		uint32_t pitchU = i420->StrideU();
 		uint32_t pitchV = i420->StrideV();
 
-		file_writer_push_video_frame(pcgs_webrtc_instance_->pmedia_file_writer_instance, frame.timestamp_us(), frame.video_frame_buffer()->width(), frame.video_frame_buffer()->height(), y, u, v, pitchY, pitchU, pitchV);
+		if (pcgs_webrtc_instance_->pmedia_file_writer_instance)
+			file_writer_push_video_frame(pcgs_webrtc_instance_->pmedia_file_writer_instance, frame.timestamp_us(), frame.video_frame_buffer()->width(), frame.video_frame_buffer()->height(), y, u, v, pitchY, pitchU, pitchV);
 	}
 };
 
@@ -572,9 +577,11 @@ int cgs_webrtc_add_to_conference(struct cgs_webrtc_instance* pcgs_webrtc_instanc
 	if (it != pcgs_webrtc_conference->pwebrtc_instance_list.end())
 		return CGS_WEBRTC_ERROR_SUCCESS;
 
+	/*
 	if (0 != file_writer_create_context(pcgs_webrtc_conference->pmedia_file_writer, &pcgs_webrtc_instance->pmedia_file_writer_instance)) {
 		return CGS_WEBRTC_ERROR_FFMPEG;
 	}
+	*/
 
 	for (auto const& receiver : pcgs_webrtc_instance->peer_connection->GetReceivers()) {
 		if (receiver->track()) {
